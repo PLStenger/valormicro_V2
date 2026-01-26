@@ -14,4 +14,4 @@ First, open your terminal. Then, run these two command lines :
 ### Run by :   
 
     time nohup bash pipeline.sh &> pipeline.out
-    time nohup bash pipeline-raw-data.sh &> pipeline-raw-data.out
+    time nohup bash pipeline_scratch.sh &> pipeline_scratch.out
