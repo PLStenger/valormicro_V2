@@ -8,12 +8,13 @@ export NTHREADS=16
 export TMPDIR="${ROOTDIR}/tmp"
 export QIIME_ENV="qiime2-amplicon-2025.7"
 export FASTQC_ENV="fastqc"
+export TRIMMOMATIC_ENV="trimmomatic"
 
 mkdir -p "$TMPDIR"
 
 log() { echo -e "\n[$(date +'%F %T')] $*\n"; }
 
-log "=== PIPELINE VALORMICRO V2 DÉMARRÉ ==="
+log "=== PIPELINE VALORMICRO V2 AVEC TRIMMOMATIC DÉMARRÉ ==="
 
 # ---- CORRECTION TOKEN CONDA ----
 log "Suppression token conda corrompu"
@@ -28,18 +29,15 @@ set -u
 validate_fastq() {
     local file="$1"
     
-    # Vérifier que le fichier existe
     if [ ! -f "$file" ]; then
         return 1
     fi
     
-    # Vérifier la taille (>1KB)
     local size=$(stat -c%s "$file" 2>/dev/null || echo "0")
     if [ "$size" -lt 1000 ]; then
         return 1
     fi
     
-    # Vérifier le format fastq (4 premières lignes)
     local line_count=0
     if [[ "$file" =~ \.gz$ ]]; then
         line_count=$(zcat "$file" 2>/dev/null | head -4 | wc -l || echo "0")
@@ -48,14 +46,11 @@ validate_fastq() {
     fi
     
     if [ "$line_count" -ne 4 ]; then
-        log "⚠️  Fichier invalide (format fastq corrompu): $file"
         return 1
     fi
     
-    # Vérifier que le fichier n'est pas corrompu (gunzip test)
     if [[ "$file" =~ \.gz$ ]]; then
         if ! gunzip -t "$file" 2>/dev/null; then
-            log "⚠️  Fichier corrompu (gzip invalide): $file"
             return 1
         fi
     fi
@@ -72,10 +67,8 @@ mkdir -p 98_databasefiles
 MANIFEST="${ROOTDIR}/98_databasefiles/manifest"
 MANIFEST_TEMP="${ROOTDIR}/98_databasefiles/manifest_temp"
 
-# Créer header
 echo -e "sample-id\tforward-absolute-filepath\treverse-absolute-filepath" > "$MANIFEST_TEMP"
 
-# Scanner fichiers R1/R2
 cd "${ROOTDIR}/01_raw_data"
 
 log "Scan des fichiers fastq dans: $(pwd)"
@@ -88,16 +81,13 @@ invalid_files=0
 
 for r1_file in *R1*.fastq* *_R1.fastq*; do
     if [ -f "$r1_file" ]; then
-        # Trouver R2 correspondant
         r2_file="${r1_file/R1/R2}"
         r2_file="${r2_file/_R1./_R2.}"
         
         if [ -f "$r2_file" ]; then
-            # Chemins absolus
             r1_abs="${ROOTDIR}/01_raw_data/$r1_file"
             r2_abs="${ROOTDIR}/01_raw_data/$r2_file"
             
-            # VALIDATION FASTQ CRITIQUE
             if ! validate_fastq "$r1_abs"; then
                 log "⚠️  FICHIER R1 INVALIDE IGNORÉ: $r1_file"
                 invalid_files=$((invalid_files + 1))
@@ -110,28 +100,23 @@ for r1_file in *R1*.fastq* *_R1.fastq*; do
                 continue
             fi
             
-            # Vérifier taille des fichiers (>1KB)
             r1_size=$(stat -c%s "$r1_file" 2>/dev/null || echo "0")
             r2_size=$(stat -c%s "$r2_file" 2>/dev/null || echo "0")
             
             if [ "$r1_size" -gt 1000 ] && [ "$r2_size" -gt 1000 ]; then
-                # Extraire sample-id
                 base_name=$(basename "$r1_file")
                 sample_id="${base_name%%_S[0-9]*}"
                 sample_id="${sample_id%%_R1*}"
                 sample_id="${sample_id%.fastq*}"
                 
-                # Remplacer caractères problématiques
                 sample_id="${sample_id//[^a-zA-Z0-9._-]/_}"
                 
-                # VÉRIFICATION CRITIQUE : Détecter si ce chemin R1 est déjà enregistré
                 if [[ -n "${filepath_registry[$r1_abs]:-}" ]]; then
                     log "⚠️  DOUBLON DÉTECTÉ: $r1_file est déjà assigné à '${filepath_registry[$r1_abs]}'"
                     duplicates_found=$((duplicates_found + 1))
                     continue
                 fi
                 
-                # Gérer doublons de sample-id
                 original_id="$sample_id"
                 counter=1
                 while [[ -n "${seen_ids[$sample_id]:-}" ]]; do
@@ -162,30 +147,6 @@ fi
 
 if [ "$count" -eq 0 ]; then
     log "ERREUR: Aucun échantillon valide trouvé"
-    exit 1
-fi
-
-# ===== VALIDATION STRICTE DU MANIFEST =====
-log "Validation stricte du manifest..."
-
-sample_ids=$(cut -f1 "$MANIFEST_TEMP" | tail -n +2)
-duplicates=$(echo "$sample_ids" | sort | uniq -d)
-if [ -n "$duplicates" ]; then
-    log "ERREUR: Doublons de sample-id détectés: $duplicates"
-    exit 1
-fi
-
-r1_paths=$(cut -f2 "$MANIFEST_TEMP" | tail -n +2)
-duplicate_r1=$(echo "$r1_paths" | sort | uniq -d)
-if [ -n "$duplicate_r1" ]; then
-    log "ERREUR CRITIQUE: Chemins R1 en doublon dans manifest"
-    exit 1
-fi
-
-r2_paths=$(cut -f3 "$MANIFEST_TEMP" | tail -n +2)
-duplicate_r2=$(echo "$r2_paths" | sort | uniq -d)
-if [ -n "$duplicate_r2" ]; then
-    log "ERREUR CRITIQUE: Chemins R2 en doublon dans manifest"
     exit 1
 fi
 
@@ -240,153 +201,129 @@ conda run -n "$FASTQC_ENV" multiqc . \
     fi
 }
 
-# ==================== 03 QIIME2 IMPORT ====================
-log "QIIME2 Import des données brutes"
+# ==================== 02B TRIMMOMATIC - NETTOYAGE DES READS ====================
+log "Trimmomatic - Nettoyage et suppression amorces 515F-926R"
 
-mkdir -p "${ROOTDIR}/05_QIIME2/core" "${ROOTDIR}/05_QIIME2/visual"
-cd "${ROOTDIR}/05_QIIME2"
+mkdir -p "${ROOTDIR}/03_cleaned_data"
+cd "${ROOTDIR}/01_raw_data"
 
-conda run -n "$QIIME_ENV" qiime tools import \
-    --type 'SampleData[PairedEndSequencesWithQuality]' \
-    --input-path "$MANIFEST" \
-    --output-path "core/demux.qza" \
-    --input-format PairedEndFastqManifestPhred33V2 || {
-    log "ERREUR import QIIME2"
-    exit 1
-}
+# Créer fichier adapters FASTA pour cutadapt-style trimming
+ADAPTERS="${ROOTDIR}/98_databasefiles/adapters_515f926r.fasta"
+mkdir -p "${ROOTDIR}/98_databasefiles"
 
-log "✅ Import QIIME2 réussi"
+cat > "$ADAPTERS" << 'ADAPTER_EOF'
+>515F
+GTGYCAGCMGCCGCGGTAA
+>926R
+CCGYCAATTYMTTTRAGTTT
+ADAPTER_EOF
 
-# Visualisation qualité
-log "Visualisation qualité des reads"
-conda run -n "$QIIME_ENV" qiime demux summarize \
-    --i-data core/demux.qza \
-    --o-visualization visual/demux-summary.qzv || {
-    log "Erreur visualisation demux"
-}
+log "Fichier adapters créé: $ADAPTERS"
 
-# ==================== 04 CUTADAPT - SUPPRESSION AMORCES ====================
-log "Cutadapt - Suppression amorces 515F-926R"
+# Compter paires totales
+total_pairs=$(grep -c "^sample-id" "$MANIFEST" || echo "0")
+if [ "$total_pairs" -gt 0 ]; then
+    total_pairs=$((total_pairs - 1))
+fi
 
-PRIMER_F="GTGYCAGCMGCCGCGGTAA"
-PRIMER_R="CCGYCAATTYMTTTRAGTTT"
+pair_count=0
+success_count=0
+failed_count=0
 
-# GESTION ROBUSTE DES ERREURS CUTADAPT
-log "Tentative cutadapt avec gestion des erreurs..."
+log "Traitement de $total_pairs paires avec Trimmomatic..."
 
-conda run -n "$QIIME_ENV" qiime cutadapt trim-paired \
-    --i-demultiplexed-sequences core/demux.qza \
-    --p-front-f "$PRIMER_F" \
-    --p-front-r "$PRIMER_R" \
-    --p-error-rate 0.1 \
-    --p-overlap 3 \
-    --p-match-read-wildcards \
-    --p-match-adapter-wildcards \
-    --p-discard-untrimmed \
-    --o-trimmed-sequences core/demux-trimmed.qza \
-    --verbose 2>&1 | tee "${ROOTDIR}/05_QIIME2/cutadapt.log" || {
+tail -n +2 "$MANIFEST" | while IFS=$'\t' read -r sample_id r1_path r2_path; do
+    pair_count=$((pair_count + 1))
     
-    log "⚠️  Cutadapt a rencontré des erreurs, analyse du log..."
+    # Fichiers de sortie
+    base_r1=$(basename "$r1_path" .fastq.gz)
+    base_r1=$(basename "$base_r1" .fastq)
+    base_r2=$(basename "$r2_path" .fastq.gz)
+    base_r2=$(basename "$base_r2" .fastq)
     
-    # Identifier les échantillons problématiques
-    problematic_samples=$(grep -oP "(?<=data/)[^/]+(?=_\d+_L\d+_R\d+)" "${ROOTDIR}/05_QIIME2/cutadapt.log" 2>/dev/null | sort -u || echo "")
+    out1p="${ROOTDIR}/03_cleaned_data/${sample_id}_R1_paired.fastq.gz"
+    out1u="${ROOTDIR}/03_cleaned_data/${sample_id}_R1_unpaired.fastq.gz"
+    out2p="${ROOTDIR}/03_cleaned_data/${sample_id}_R2_paired.fastq.gz"
+    out2u="${ROOTDIR}/03_cleaned_data/${sample_id}_R2_unpaired.fastq.gz"
     
-    if [ -n "$problematic_samples" ]; then
-        log "⚠️  Échantillons problématiques détectés:"
-        echo "$problematic_samples" | while read -r sample; do
-            log "   - $sample"
-        done
+    log "Trimmomatic $pair_count/$total_pairs: $sample_id"
+    
+    # Exécution Trimmomatic avec suppression amorces
+    conda run -n "$TRIMMOMATIC_ENV" trimmomatic PE -threads 8 -phred33 \
+        "$r1_path" "$r2_path" \
+        "$out1p" "$out1u" "$out2p" "$out2u" \
+        ILLUMINACLIP:"$ADAPTERS":2:30:10 \
+        LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:100 2>&1 | grep -v "^Input Read" || {
+        log "⚠️  Erreur Trimmomatic sur $sample_id - IGNORÉ"
+        failed_count=$((failed_count + 1))
+        continue
+    }
+    
+    # Vérification synchronisation CRITIQUE
+    if [[ -f "$out1p" && -f "$out2p" ]]; then
+        # Compter reads avec méthode robuste
+        count1=$(( $(zcat "$out1p" 2>/dev/null | wc -l) / 4 ))
+        count2=$(( $(zcat "$out2p" 2>/dev/null | wc -l) / 4 ))
         
-        log "🔧 Reconstruction du manifest sans les échantillons problématiques..."
-        
-        # Créer un nouveau manifest filtré
-        MANIFEST_FILTERED="${ROOTDIR}/98_databasefiles/manifest_filtered"
-        head -1 "$MANIFEST" > "$MANIFEST_FILTERED"
-        
-        tail -n +2 "$MANIFEST" | while IFS=$'\t' read -r sample_id r1_path r2_path; do
-            # Vérifier si ce sample est dans la liste problématique
-            is_problematic=false
-            echo "$problematic_samples" | while read -r prob_sample; do
-                if [[ "$sample_id" == "$prob_sample"* ]]; then
-                    is_problematic=true
-                    break
-                fi
-            done
-            
-            if [ "$is_problematic" = false ]; then
-                echo -e "$sample_id\t$r1_path\t$r2_path" >> "$MANIFEST_FILTERED"
-            else
-                log "   ⚠️  Exclusion: $sample_id"
-            fi
-        done
-        
-        # Réimporter sans les échantillons problématiques
-        log "Ré-import QIIME2 sans échantillons problématiques..."
-        
-        rm -f core/demux.qza
-        
-        conda run -n "$QIIME_ENV" qiime tools import \
-            --type 'SampleData[PairedEndSequencesWithQuality]' \
-            --input-path "$MANIFEST_FILTERED" \
-            --output-path "core/demux.qza" \
-            --input-format PairedEndFastqManifestPhred33V2 || {
-            log "ERREUR: Ré-import QIIME2 échoué"
-            exit 1
-        }
-        
-        log "✅ Ré-import réussi, nouvelle tentative cutadapt..."
-        
-        conda run -n "$QIIME_ENV" qiime cutadapt trim-paired \
-            --i-demultiplexed-sequences core/demux.qza \
-            --p-front-f "$PRIMER_F" \
-            --p-front-r "$PRIMER_R" \
-            --p-error-rate 0.1 \
-            --p-overlap 3 \
-            --p-match-read-wildcards \
-            --p-match-adapter-wildcards \
-            --p-discard-untrimmed \
-            --o-trimmed-sequences core/demux-trimmed.qza \
-            --verbose || {
-            log "❌ ERREUR Cutadapt persistante même après filtrage"
-            exit 1
-        }
-        
-        log "✅ Cutadapt réussi après filtrage"
+        if [ "$count1" = "$count2" ] && [ "$count1" -gt 0 ]; then
+            log "✅ $sample_id SYNCHRONISÉ: $count1 reads"
+            success_count=$((success_count + 1))
+        else
+            log "⚠️  $sample_id DÉSYNCHRONISÉ ($count1 vs $count2) - SUPPRESSION"
+            rm -f "$out1p" "$out2p" "$out1u" "$out2u"
+            failed_count=$((failed_count + 1))
+        fi
     else
-        log "❌ ERREUR Cutadapt - Impossible d'identifier les échantillons problématiques"
-        exit 1
+        log "⚠️  Fichiers de sortie manquants pour $sample_id"
+        failed_count=$((failed_count + 1))
     fi
-}
+done
 
-log "✅ Cutadapt terminé"
+log "Trimmomatic terminé - Succès: $success_count / Erreurs: $failed_count"
 
-# Visualisation après cutadapt
-log "Visualisation après suppression amorces"
-conda run -n "$QIIME_ENV" qiime demux summarize \
-    --i-data core/demux-trimmed.qza \
-    --o-visualization visual/demux-trimmed-summary.qzv || {
-    log "Erreur visualisation trimmed"
-}
+# ==================== 03 CRÉER MANIFEST POUR DONNÉES NETTOYÉES ====================
+log "Génération manifest pour données nettoyées"
 
-# ==================== 05 FASTQC CLEANED DATA ====================
-log "FastQC/MultiQC sur données après suppression amorces"
+MANIFEST_TRIMMED="${ROOTDIR}/98_databasefiles/manifest_trimmed"
+
+echo -e "sample-id\tforward-absolute-filepath\treverse-absolute-filepath" > "$MANIFEST_TRIMMED"
+
+cd "${ROOTDIR}/03_cleaned_data"
+
+for r1_file in *_R1_paired.fastq.gz; do
+    if [ -f "$r1_file" ]; then
+        r2_file="${r1_file/_R1_paired/_R2_paired}"
+        
+        if [ -f "$r2_file" ]; then
+            sample_id="${r1_file%%_R1_paired*}"
+            
+            r1_abs="${ROOTDIR}/03_cleaned_data/$r1_file"
+            r2_abs="${ROOTDIR}/03_cleaned_data/$r2_file"
+            
+            echo -e "$sample_id\t$r1_abs\t$r2_abs" >> "$MANIFEST_TRIMMED"
+            log "Ajouté au manifest nettoyé: $sample_id"
+        fi
+    fi
+done
+
+trimmed_count=$(tail -n +2 "$MANIFEST_TRIMMED" | wc -l)
+log "✅ Manifest nettoyé créé avec $trimmed_count échantillons"
+
+if [ "$trimmed_count" -eq 0 ]; then
+    log "ERREUR: Aucun échantillon survit au trimming"
+    exit 1
+fi
+
+# ==================== 04 FASTQC CLEANED DATA ====================
+log "FastQC/MultiQC sur données nettoyées"
 
 mkdir -p "${ROOTDIR}/03_cleaned_data_qc"
 rm -f "${ROOTDIR}/03_cleaned_data_qc"/*multiqc* 2>/dev/null || true
 
-log "Export temporaire pour FastQC"
-mkdir -p "${ROOTDIR}/temp_export_cleaned"
+cd "${ROOTDIR}/03_cleaned_data"
 
-conda run -n "$QIIME_ENV" qiime tools export \
-    --input-path core/demux-trimmed.qza \
-    --output-path "${ROOTDIR}/temp_export_cleaned" || {
-    log "Erreur export pour FastQC"
-}
-
-# FastQC sur fichiers nettoyés
-cd "${ROOTDIR}/temp_export_cleaned"
 count=0
-for file in *.fastq* */*.fastq*; do
+for file in *_paired.fastq.gz; do
     if [ -f "$file" ]; then
         count=$((count + 1))
         log "FastQC cleaned $count: $(basename $file)"
@@ -408,7 +345,7 @@ cd "${ROOTDIR}/03_cleaned_data_qc"
 conda run -n "$FASTQC_ENV" multiqc . \
     --force \
     --filename "cleaned_data_qc" \
-    --title "Cleaned Data Quality Control - After Primer Removal" \
+    --title "Cleaned Data Quality Control - After Trimmomatic" \
     --ignore-symlinks \
     --no-ansi 2>/dev/null || {
     log "MultiQC cleaned data warnings"
@@ -417,10 +354,32 @@ conda run -n "$FASTQC_ENV" multiqc . \
     fi
 }
 
-# Nettoyer export temporaire
-rm -rf "${ROOTDIR}/temp_export_cleaned"
-
 log "✅ Contrôle qualité post-nettoyage terminé"
+
+# ==================== 05 QIIME2 IMPORT ====================
+log "QIIME2 Import des données nettoyées"
+
+mkdir -p "${ROOTDIR}/05_QIIME2/core" "${ROOTDIR}/05_QIIME2/visual"
+cd "${ROOTDIR}/05_QIIME2"
+
+conda run -n "$QIIME_ENV" qiime tools import \
+    --type 'SampleData[PairedEndSequencesWithQuality]' \
+    --input-path "$MANIFEST_TRIMMED" \
+    --output-path "core/demux.qza" \
+    --input-format PairedEndFastqManifestPhred33V2 || {
+    log "ERREUR import QIIME2"
+    exit 1
+}
+
+log "✅ Import QIIME2 réussi"
+
+# Visualisation qualité
+log "Visualisation qualité des reads"
+conda run -n "$QIIME_ENV" qiime demux summarize \
+    --i-data core/demux.qza \
+    --o-visualization visual/demux-summary.qzv || {
+    log "Erreur visualisation demux"
+}
 
 # ==================== 06 DADA2 ====================
 log "DADA2 denoising"
@@ -428,7 +387,7 @@ log "DADA2 denoising"
 cd "${ROOTDIR}/05_QIIME2/core"
 
 conda run -n "$QIIME_ENV" qiime dada2 denoise-paired \
-    --i-demultiplexed-seqs demux-trimmed.qza \
+    --i-demultiplexed-seqs demux.qza \
     --o-table table.qza \
     --o-representative-sequences rep-seqs.qza \
     --o-denoising-stats denoising-stats.qza \
@@ -450,14 +409,13 @@ CLASSIFIER_URL="/nvme/bio/data_fungi/valormicro_nc/98_databasefiles/silva-138.2-
 CLASSIFIER="${ROOTDIR}/98_databasefiles/silva-138.2-ssu-nr99-515f-926r-classifier.qza"
 
 if [ ! -f "$CLASSIFIER" ]; then
-    log "Copie classifier SILVA depuis l'installation existante"
+    log "Copie classifier SILVA"
     cp "$CLASSIFIER_URL" "$CLASSIFIER" || {
-        log "ERREUR: Classifier non trouvé à: $CLASSIFIER_URL"
+        log "ERREUR: Classifier non trouvé"
         exit 1
     }
 fi
 
-# Valider classifier
 conda run -n "$QIIME_ENV" qiime tools validate "$CLASSIFIER" || {
     log "ERREUR: Classifier invalide"
     exit 1
@@ -475,9 +433,8 @@ conda run -n "$QIIME_ENV" qiime feature-classifier classify-sklearn \
     --o-classification taxonomy.qza \
     --p-n-jobs "$NTHREADS"
 
-log "✅ Classification taxonomique SILVA 138.2 réussie"
+log "✅ Classification taxonomique réussie"
 
-# Vérification taxonomie
 conda run -n "$QIIME_ENV" qiime tools export \
     --input-path taxonomy.qza \
     --output-path temp_tax_check
@@ -485,13 +442,11 @@ conda run -n "$QIIME_ENV" qiime tools export \
 if [ -f "temp_tax_check/taxonomy.tsv" ]; then
     tax_count=$(tail -n +2 temp_tax_check/taxonomy.tsv | wc -l)
     log "✅ Taxonomie contient $tax_count classifications"
-    log "Aperçu taxonomie:"
-    head -5 temp_tax_check/taxonomy.tsv | column -t -s$'\t' || head -5 temp_tax_check/taxonomy.tsv
 fi
 rm -rf temp_tax_check
 
 # ==================== 08 ANALYSES FINALES ====================
-log "Analyses finales: barplots, PCA, diversité"
+log "Analyses finales: barplots, diversité"
 
 mkdir -p "${ROOTDIR}/05_QIIME2/export"
 cd "${ROOTDIR}/05_QIIME2/core"
@@ -501,11 +456,6 @@ log "Summary table"
 conda run -n "$QIIME_ENV" qiime feature-table summarize \
     --i-table table.qza \
     --o-visualization "../visual/table-summary.qzv"
-
-# Export summary
-conda run -n "$QIIME_ENV" qiime tools export \
-    --input-path "../visual/table-summary.qzv" \
-    --output-path "../visual/table-summary"
 
 # Taxa barplots
 log "Génération taxa barplots"
@@ -537,15 +487,8 @@ fi
 log "Création métadonnées"
 cd "${ROOTDIR}/98_databasefiles"
 
-# Utiliser le manifest filtré si existe, sinon l'original
-if [ -f "manifest_filtered" ]; then
-    MANIFEST_USE="manifest_filtered"
-else
-    MANIFEST_USE="manifest"
-fi
-
 echo -e "sample-id\tgroup\ttype" > "diversity-metadata.tsv"
-tail -n +2 "$MANIFEST_USE" | cut -f1 | while read -r sample_id; do
+tail -n +2 "$MANIFEST_TRIMMED" | cut -f1 | while read -r sample_id; do
     if echo "${sample_id,,}" | grep -qE "(neg|blank|control|ctrl|eau|mock)"; then
         echo -e "$sample_id\tcontrol\tnegative" >> "diversity-metadata.tsv"
     else
@@ -585,22 +528,18 @@ log "✅ Métriques de diversité créées"
 # ==================== 10 EXPORTS ====================
 log "Export de tous les fichiers QIIME2"
 
-mkdir -p "${ROOTDIR}/05_QIIME2/export/core" \
-         "${ROOTDIR}/05_QIIME2/export/diversity_tsv"
+mkdir -p "${ROOTDIR}/05_QIIME2/export/core" "${ROOTDIR}/05_QIIME2/export/diversity_tsv"
 
 cd "${ROOTDIR}/05_QIIME2"
 
-# Export table principale
 conda run -n "$QIIME_ENV" qiime tools export \
     --input-path core/table.qza \
     --output-path export/core/table
 
-# Export séquences
 conda run -n "$QIIME_ENV" qiime tools export \
     --input-path core/rep-seqs.qza \
     --output-path export/core/rep-seqs
 
-# Export taxonomie
 conda run -n "$QIIME_ENV" qiime tools export \
     --input-path core/taxonomy.qza \
     --output-path export/core/taxonomy
@@ -622,7 +561,6 @@ export_diversity() {
             for ext in tsv txt csv; do
                 find "$temp_dir" -name "*.${ext}" -type f | while read -r found_file; do
                     cp "$found_file" "export/diversity_tsv/${output_name}.${ext}"
-                    log "✅ ${output_name}.${ext} créé"
                 done
             done
             
@@ -638,28 +576,20 @@ export_diversity() {
     fi
 }
 
-# Export métriques alpha
-log "Export métriques alpha"
+# Export métriques
+log "Export métriques alpha et beta"
 export_diversity "core/diversity/Vector-observed_asv.qza" "observed_features"
 export_diversity "core/diversity/Vector-shannon.qza" "shannon"
 export_diversity "core/diversity/Vector-evenness.qza" "evenness"
 export_diversity "core/diversity/Vector-faith_pd.qza" "faith_pd"
-
-# Export matrices distance
-log "Export matrices distance"
 export_diversity "core/diversity/Matrix-jaccard.qza" "jaccard_distance"
 export_diversity "core/diversity/Matrix-braycurtis.qza" "bray_curtis_distance"
 export_diversity "core/diversity/Matrix-unweighted_unifrac.qza" "unweighted_unifrac_distance"
 export_diversity "core/diversity/Matrix-weighted_unifrac.qza" "weighted_unifrac_distance"
-
-# Export PCoA
-log "Export PCoA"
 export_diversity "core/pcoa/PCoA-jaccard.qza" "jaccard_pcoa"
 export_diversity "core/pcoa/PCoA-braycurtis.qza" "bray_curtis_pcoa"
 export_diversity "core/pcoa/PCoA-unweighted_unifrac.qza" "unweighted_unifrac_pcoa"
 export_diversity "core/pcoa/PCoA-weighted_unifrac.qza" "weighted_unifrac_pcoa"
-
-# Export stats DADA2
 export_diversity "core/denoising-stats.qza" "dada2_stats"
 
 # ==================== 11 CONVERSION BIOM ====================
@@ -667,7 +597,6 @@ log "Conversion BIOM vers TSV et création ASV.txt"
 
 cd "${ROOTDIR}/05_QIIME2/export"
 
-# Conversion table
 if [ -f "core/table/feature-table.biom" ]; then
     log "Conversion BIOM"
     
@@ -682,7 +611,7 @@ if [ -f "core/table/feature-table.biom" ]; then
             core/table_tsv/table-from-biom.tsv > \
             core/table_tsv/ASV.tsv
         
-        log "✅ ASV.tsv créé ($(wc -l < core/table_tsv/ASV.tsv) lignes)"
+        log "✅ ASV.tsv créé"
     }
 fi
 
@@ -723,9 +652,6 @@ if [ -f "core/table_tsv/ASV.tsv" ] && [ -f "core/taxonomy/taxonomy.tsv" ]; then
     
     lines_count=$(wc -l < "$output_file" 2>/dev/null || echo "0")
     log "✅ ASV.txt créé avec taxonomie ($lines_count lignes)"
-    
-    log "Aperçu ASV.txt:"
-    head -3 "$output_file" | column -t -s$'\t' 2>/dev/null || head -3 "$output_file"
 fi
 
 # ==================== RAPPORT FINAL ====================
@@ -740,61 +666,48 @@ cat > "${ROOTDIR}/05_QIIME2/RAPPORT_FINAL.md" << EOF
 
 ## ✅ Étapes complétées
 
-1. **Contrôle qualité**
-   - FastQC sur données brutes: ${ROOTDIR}/02_qualitycheck/raw_data_qc.html
-   - FastQC sur données nettoyées: ${ROOTDIR}/03_cleaned_data_qc/cleaned_data_qc.html
+1. **Contrôle qualité brutes**
+   - FastQC: ${ROOTDIR}/02_qualitycheck/raw_data_qc.html
 
-2. **Import et nettoyage QIIME2**
-   - Import: $count échantillons valides
-   - Fichiers corrompus exclus: $invalid_files
-   - Suppression amorces: 515F-926R (région V4-V5)
+2. **Trimmomatic - Nettoyage**
+   - Suppression amorces 515F-926R
+   - QC filters: LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:100
+   - Échantillons nettoyés: $trimmed_count
 
-3. **DADA2 denoising**
+3. **Contrôle qualité post-nettoyage**
+   - FastQC: ${ROOTDIR}/03_cleaned_data_qc/cleaned_data_qc.html
+
+4. **DADA2 denoising**
    - Table ASV créée
    - Séquences représentatives générées
 
-4. **Classification taxonomique**
+5. **Classification taxonomique**
    - Classifier: SILVA 138.2 SSU NR99
    - Amorces: 515F-926R
-   - Classifications: $tax_count ASVs
 
-5. **Analyses de diversité**
-   - ⚠️ SANS raréfaction (toutes données conservées)
-   - Métriques alpha: richesse, Shannon, équitabilité, Faith PD
-   - Métriques beta: Jaccard, Bray-Curtis, UniFrac
-   - PCoA calculées pour toutes métriques beta
+6. **Analyses de diversité**
+   - ⚠️ SANS raréfaction
+   - Métriques alpha & beta calculées
+   - PCoA pour toutes métriques
 
-## 📁 Fichiers de sortie principaux
+## 📁 Fichiers principaux
 
-### Visualisations
 - **Taxa barplots**: ${ROOTDIR}/05_QIIME2/visual/taxa-bar-plots.qzv
-- **PCoA Emperor plots**: ${ROOTDIR}/05_QIIME2/visual/Emperor-*.qzv
-- **Summary table**: ${ROOTDIR}/05_QIIME2/visual/table-summary.qzv
-
-### Tables
-- **ASV avec taxonomie**: ${ROOTDIR}/05_QIIME2/export/core/table_tsv/ASV.txt
-- **Taxonomie**: ${ROOTDIR}/05_QIIME2/export/core/taxonomy/taxonomy.tsv
-- **Table BIOM**: ${ROOTDIR}/05_QIIME2/export/core/table/feature-table.biom
-
-### Diversité (TSV)
-- **Métriques alpha**: ${ROOTDIR}/05_QIIME2/export/diversity_tsv/
-- **Matrices distance**: ${ROOTDIR}/05_QIIME2/export/diversity_tsv/
-- **PCoA**: ${ROOTDIR}/05_QIIME2/export/diversity_tsv/
-
-## ⚠️ Fichiers exclus
-- Doublons: $duplicates_found
-- Fichiers corrompus: $invalid_files
+- **PCoA Emperor**: ${ROOTDIR}/05_QIIME2/visual/Emperor-*.qzv
+- **ASV + taxonomie**: ${ROOTDIR}/05_QIIME2/export/core/table_tsv/ASV.txt
+- **Diversité TSV**: ${ROOTDIR}/05_QIIME2/export/diversity_tsv/
 
 ## ✅ PIPELINE TERMINÉ AVEC SUCCÈS
 
-Total fichiers TSV exportés: $tsv_count
+Total TSV exportés: $tsv_count
 EOF
 
-log "🎉 PIPELINE VALORMICRO V2 TERMINÉ AVEC SUCCÈS ! 🎉"
+log "🎉 PIPELINE VALORMICRO V2 AVEC TRIMMOMATIC TERMINÉ AVEC SUCCÈS ! 🎉"
 log ""
 log "==================== FICHIERS PRINCIPAUX ===================="
 log "📊 Barplots: ${ROOTDIR}/05_QIIME2/visual/taxa-bar-plots.qzv"
 log "📊 PCoA: ${ROOTDIR}/05_QIIME2/visual/Emperor-*.qzv"
 log "📊 Table ASV: ${ROOTDIR}/05_QIIME2/export/core/table_tsv/ASV.txt"
-log "📊 Diversité TSV: ${ROOTDIR}/05_QIIME2/export/diversity_tsv/"
+log "📊 Diversité: ${ROOTDIR}/05_QIIME2/export/diversity_tsv/"
 log "📄 Rapport: ${ROOTDIR}/05_QIIME2/RAPPORT_FINAL.md"
+log "📄 Données nettoyées: ${ROOTDIR}/03_cleaned_data/"
