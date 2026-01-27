@@ -29,9 +29,10 @@ cd "${ROOTDIR}"
 mkdir -p 98_databasefiles
 
 MANIFEST="${ROOTDIR}/98_databasefiles/manifest"
+MANIFEST_TEMP="${ROOTDIR}/98_databasefiles/manifest_temp"
 
 # Créer header
-echo -e "sample-id\tforward-absolute-filepath\treverse-absolute-filepath" > "$MANIFEST"
+echo -e "sample-id\tforward-absolute-filepath\treverse-absolute-filepath" > "$MANIFEST_TEMP"
 
 # Scanner fichiers R1/R2
 cd "${ROOTDIR}/01_raw_data"
@@ -39,7 +40,9 @@ cd "${ROOTDIR}/01_raw_data"
 log "Scan des fichiers fastq dans: $(pwd)"
 
 declare -A seen_ids
+declare -A filepath_registry  # Nouveau : tracker les chemins de fichiers
 count=0
+duplicates_found=0
 
 for r1_file in *R1*.fastq* *_R1.fastq*; do
     if [ -f "$r1_file" ]; then
@@ -62,40 +65,87 @@ for r1_file in *R1*.fastq* *_R1.fastq*; do
                 # Remplacer caractères problématiques
                 sample_id="${sample_id//[^a-zA-Z0-9._-]/_}"
                 
-                # Gérer doublons
+                # Chemins absolus
+                r1_abs="${ROOTDIR}/01_raw_data/$r1_file"
+                r2_abs="${ROOTDIR}/01_raw_data/$r2_file"
+                
+                # VÉRIFICATION CRITIQUE : Détecter si ce chemin R1 est déjà enregistré
+                if [[ -n "${filepath_registry[$r1_abs]:-}" ]]; then
+                    log "⚠️  DOUBLON DÉTECTÉ: $r1_file est déjà assigné à '${filepath_registry[$r1_abs]}'"
+                    log "   Nouvelle tentative: '$sample_id' - IGNORÉ"
+                    duplicates_found=$((duplicates_found + 1))
+                    continue
+                fi
+                
+                # Gérer doublons de sample-id (par suffixe numérique)
                 original_id="$sample_id"
                 counter=1
                 while [[ -n "${seen_ids[$sample_id]:-}" ]]; do
                     sample_id="${original_id}_${counter}"
                     counter=$((counter + 1))
                 done
+                
                 seen_ids["$sample_id"]=1
+                filepath_registry["$r1_abs"]="$sample_id"  # Enregistrer ce chemin
                 
-                # Chemins absolus
-                r1_abs="${ROOTDIR}/01_raw_data/$r1_file"
-                r2_abs="${ROOTDIR}/01_raw_data/$r2_file"
-                
-                echo -e "$sample_id\t$r1_abs\t$r2_abs" >> "$MANIFEST"
+                echo -e "$sample_id\t$r1_abs\t$r2_abs" >> "$MANIFEST_TEMP"
                 count=$((count + 1))
-                log "Ajouté: $sample_id"
+                log "Ajouté: $sample_id ($r1_file)"
             fi
         fi
     fi
 done
 
-log "Manifest créé avec $count échantillons"
+log "Manifest temporaire créé avec $count échantillons"
+
+if [ $duplicates_found -gt 0 ]; then
+    log "⚠️  $duplicates_found fichier(s) R1 en doublon détecté(s) et ignoré(s)"
+fi
 
 if [ "$count" -eq 0 ]; then
     log "ERREUR: Aucun échantillon trouvé"
     exit 1
 fi
 
-# Vérifier doublons
-duplicates=$(cut -f1 "$MANIFEST" | sort | uniq -d)
+# ===== VALIDATION STRICTE DU MANIFEST =====
+log "Validation stricte du manifest..."
+
+# Vérifier unicité des sample-id
+sample_ids=$(cut -f1 "$MANIFEST_TEMP" | tail -n +2)
+duplicates=$(echo "$sample_ids" | sort | uniq -d)
 if [ -n "$duplicates" ]; then
-    log "ERREUR: Doublons détectés: $duplicates"
+    log "ERREUR: Doublons de sample-id détectés: $duplicates"
     exit 1
 fi
+
+# Vérifier unicité des chemins R1 (CRITIQUE pour QIIME2)
+r1_paths=$(cut -f2 "$MANIFEST_TEMP" | tail -n +2)
+duplicate_r1=$(echo "$r1_paths" | sort | uniq -d)
+if [ -n "$duplicate_r1" ]; then
+    log "ERREUR CRITIQUE: Chemins R1 en doublon dans manifest:"
+    echo "$duplicate_r1" | while read -r dup_path; do
+        log "  $dup_path"
+    done
+    log "Solution: Vérifiez vos fichiers fastq, certains R1 sont assignés à plusieurs sample-id"
+    exit 1
+fi
+
+# Vérifier unicité des chemins R2
+r2_paths=$(cut -f3 "$MANIFEST_TEMP" | tail -n +2)
+duplicate_r2=$(echo "$r2_paths" | sort | uniq -d)
+if [ -n "$duplicate_r2" ]; then
+    log "ERREUR CRITIQUE: Chemins R2 en doublon dans manifest:"
+    echo "$duplicate_r2" | while read -r dup_path; do
+        log "  $dup_path"
+    done
+    exit 1
+fi
+
+log "✅ Validation manifest réussie: $count échantillons uniques"
+
+# Copier manifest validé
+cp "$MANIFEST_TEMP" "$MANIFEST"
+rm "$MANIFEST_TEMP"
 
 log "Aperçu du manifest:"
 head -10 "$MANIFEST"
@@ -114,7 +164,7 @@ for file in *.fastq* */*.fastq*; do
     if [ -f "$file" ]; then
         count=$((count + 1))
         log "FastQC $count: $(basename $file)"
-        conda run -n fastqc fastqc "$file" -o "${ROOTDIR}/02_qualitycheck" --threads 2 --quiet || {
+        conda run -n qiime2-amplicon-2025.7 fastqc "$file" -o "${ROOTDIR}/02_qualitycheck" --threads 2 --quiet || {
             log "Erreur FastQC sur $file, continuons"
             continue
         }
@@ -132,7 +182,7 @@ log "FastQC terminé sur $count fichiers"
 log "MultiQC sur données brutes"
 cd "${ROOTDIR}/02_qualitycheck"
 
-conda run -n multiqc multiqc . \
+conda run -n qiime2-amplicon-2025.7 multiqc . \
     --force \
     --filename "raw_data_qc" \
     --title "Raw Data Quality Control - ValorMicro V2" \
@@ -224,7 +274,7 @@ for file in *.fastq* */*.fastq*; do
     if [ -f "$file" ]; then
         count=$((count + 1))
         log "FastQC cleaned $count: $(basename $file)"
-        conda run -n fastqc fastqc "$file" -o "${ROOTDIR}/03_cleaned_data_qc" --threads 2 --quiet || {
+        conda run -n qiime2-amplicon-2025.7 fastqc "$file" -o "${ROOTDIR}/03_cleaned_data_qc" --threads 2 --quiet || {
             log "Erreur FastQC sur $file"
             continue
         }
@@ -239,7 +289,7 @@ done
 log "MultiQC sur données nettoyées"
 cd "${ROOTDIR}/03_cleaned_data_qc"
 
-conda run -n multiqc multiqc . \
+conda run -n qiime2-amplicon-2025.7 multiqc . \
     --force \
     --filename "cleaned_data_qc" \
     --title "Cleaned Data Quality Control - After Primer Removal" \
@@ -329,7 +379,7 @@ rm -rf temp_tax_check
 # ==================== 08 ANALYSES FINALES ====================
 log "Analyses finales: barplots, PCA, diversité"
 
-mkdir -p "${ROOTDIR}/05_QIIME2/subtables" "${ROOTDIR}/05_QIIME2/export"
+mkdir -p "${ROOTDIR}/05_QIIME2/export"
 cd "${ROOTDIR}/05_QIIME2/core"
 
 # Summary table
@@ -342,30 +392,6 @@ conda run -n qiime2-amplicon-2025.7 qiime feature-table summarize \
 conda run -n qiime2-amplicon-2025.7 qiime tools export \
     --input-path "../visual/table-summary.qzv" \
     --output-path "../visual/table-summary"
-
-# Extraction profondeur raréfaction (10e percentile)
-if [ -f "../visual/table-summary/sample-frequency-detail.csv" ]; then
-    RAREFACTION_DEPTH_FLOAT=$(awk -F',' 'NR>1 {print $2}' "../visual/table-summary/sample-frequency-detail.csv" | sort -n | awk 'NR==int(NR*0.1)+1' || echo "5000")
-    RAREFACTION_DEPTH=$(printf "%.0f" "$RAREFACTION_DEPTH_FLOAT" 2>/dev/null || echo "5000")
-    
-    if ! [[ "$RAREFACTION_DEPTH" =~ ^[0-9]+$ ]] || [ "$RAREFACTION_DEPTH" -lt 1 ]; then
-        RAREFACTION_DEPTH=5000
-    fi
-    log "Profondeur raréfaction: $RAREFACTION_DEPTH"
-else
-    RAREFACTION_DEPTH=5000
-    log "Profondeur raréfaction par défaut: $RAREFACTION_DEPTH"
-fi
-
-# Raréfaction
-log "Raréfaction à profondeur $RAREFACTION_DEPTH"
-conda run -n qiime2-amplicon-2025.7 qiime feature-table rarefy \
-    --i-table table.qza \
-    --p-sampling-depth "$RAREFACTION_DEPTH" \
-    --o-rarefied-table "../subtables/RarTable-all.qza" || {
-    log "Erreur raréfaction, copie table originale"
-    cp table.qza "../subtables/RarTable-all.qza"
-}
 
 # Taxa barplots
 log "Génération taxa barplots"
@@ -408,16 +434,14 @@ done
 
 log "✅ Métadonnées créées"
 
-# Core metrics phylogenetic
+# Core metrics phylogenetic (SANS raréfaction)
 cd "${ROOTDIR}/05_QIIME2/core"
 
 log "Core metrics phylogenetic"
 conda run -n qiime2-amplicon-2025.7 qiime diversity core-metrics-phylogenetic \
     --i-table table.qza \
     --i-phylogeny tree.qza \
-    --p-sampling-depth "$RAREFACTION_DEPTH" \
-    --m-metadata-file "../98_databasefiles/diversity-metadata.tsv" \
-    --o-rarefied-table rarefied_table.qza \
+    --m-metadata-file "${ROOTDIR}/98_databasefiles/diversity-metadata.tsv" \
     --o-faith-pd-vector diversity/Vector-faith_pd.qza \
     --o-observed-features-vector diversity/Vector-observed_asv.qza \
     --o-shannon-vector diversity/Vector-shannon.qza \
@@ -441,7 +465,6 @@ log "✅ Métriques de diversité créées"
 log "Export de tous les fichiers QIIME2"
 
 mkdir -p "${ROOTDIR}/05_QIIME2/export/core" \
-         "${ROOTDIR}/05_QIIME2/export/subtables/RarTable-all" \
          "${ROOTDIR}/05_QIIME2/export/diversity_tsv"
 
 cd "${ROOTDIR}/05_QIIME2"
@@ -460,11 +483,6 @@ conda run -n qiime2-amplicon-2025.7 qiime tools export \
 conda run -n qiime2-amplicon-2025.7 qiime tools export \
     --input-path core/taxonomy.qza \
     --output-path export/core/taxonomy
-
-# Export table raréfiée
-conda run -n qiime2-amplicon-2025.7 qiime tools export \
-    --input-path subtables/RarTable-all.qza \
-    --output-path export/subtables/RarTable-all
 
 # Fonction export diversité
 export_diversity() {
@@ -530,31 +548,33 @@ log "Conversion BIOM vers TSV et création ASV.txt"
 
 cd "${ROOTDIR}/05_QIIME2/export"
 
-# Conversion table raréfiée
-if [ -f "subtables/RarTable-all/feature-table.biom" ]; then
+# Conversion table
+if [ -f "core/table/feature-table.biom" ]; then
     log "Conversion BIOM"
     
+    mkdir -p "core/table_tsv"
+    
     conda run -n qiime2-amplicon-2025.7 biom convert \
-        -i subtables/RarTable-all/feature-table.biom \
-        -o subtables/RarTable-all/table-from-biom.tsv \
+        -i core/table/feature-table.biom \
+        -o core/table_tsv/table-from-biom.tsv \
         --to-tsv && {
         
         # Modifier header
         sed '1d ; s/#OTU ID/ASV_ID/' \
-            subtables/RarTable-all/table-from-biom.tsv > \
-            subtables/RarTable-all/ASV.tsv
+            core/table_tsv/table-from-biom.tsv > \
+            core/table_tsv/ASV.tsv
         
-        log "✅ ASV.tsv créé ($(wc -l < subtables/RarTable-all/ASV.tsv) lignes)"
+        log "✅ ASV.tsv créé ($(wc -l < core/table_tsv/ASV.tsv) lignes)"
     }
 fi
 
 # Création ASV.txt avec taxonomie
 log "Création ASV.txt avec taxonomie"
 
-if [ -f "subtables/RarTable-all/ASV.tsv" ] && [ -f "core/taxonomy/taxonomy.tsv" ]; then
-    asv_file="subtables/RarTable-all/ASV.tsv"
+if [ -f "core/table_tsv/ASV.tsv" ] && [ -f "core/taxonomy/taxonomy.tsv" ]; then
+    asv_file="core/table_tsv/ASV.tsv"
     taxonomy_file="core/taxonomy/taxonomy.tsv"
-    output_file="subtables/RarTable-all/ASV.txt"
+    output_file="core/table_tsv/ASV.txt"
     
     # Header
     sample_header=$(head -1 "$asv_file" | cut -f2-)
@@ -609,7 +629,7 @@ cat > "${ROOTDIR}/05_QIIME2/RAPPORT_FINAL.md" << EOF
    - FastQC sur données nettoyées: ${ROOTDIR}/03_cleaned_data_qc/cleaned_data_qc.html
 
 2. **Import et nettoyage QIIME2**
-   - Import: $count échantillons
+   - Import: $count échantillons (doublons de fichiers éliminés)
    - Suppression amorces: 515F-926R (région V4-V5)
 
 3. **DADA2 denoising**
@@ -622,7 +642,7 @@ cat > "${ROOTDIR}/05_QIIME2/RAPPORT_FINAL.md" << EOF
    - Classifications: $tax_count ASVs
 
 5. **Analyses de diversité**
-   - Profondeur raréfaction: $RAREFACTION_DEPTH
+   - ⚠️ SANS raréfaction (toutes données conservées)
    - Métriques alpha: richesse, Shannon, équitabilité, Faith PD
    - Métriques beta: Jaccard, Bray-Curtis, UniFrac
    - PCoA calculées pour toutes métriques beta
@@ -635,7 +655,7 @@ cat > "${ROOTDIR}/05_QIIME2/RAPPORT_FINAL.md" << EOF
 - **Summary table**: ${ROOTDIR}/05_QIIME2/visual/table-summary.qzv
 
 ### Tables
-- **ASV avec taxonomie**: ${ROOTDIR}/05_QIIME2/export/subtables/RarTable-all/ASV.txt
+- **ASV avec taxonomie**: ${ROOTDIR}/05_QIIME2/export/core/table_tsv/ASV.txt
 - **Taxonomie**: ${ROOTDIR}/05_QIIME2/export/core/taxonomy/taxonomy.tsv
 - **Table BIOM**: ${ROOTDIR}/05_QIIME2/export/core/table/feature-table.biom
 
@@ -663,7 +683,7 @@ cat > "${ROOTDIR}/05_QIIME2/RAPPORT_FINAL.md" << EOF
 
 ### Pour barplots de composition
 Utiliser: \`visual/taxa-bar-plots.qzv\` (ouvrir sur view.qiime2.org)
-Ou: \`export/subtables/RarTable-all/ASV.txt\` pour graphiques personnalisés
+Ou: \`export/core/table_tsv/ASV.txt\` pour graphiques personnalisés
 
 ### Pour PCA (PCoA)
 Utiliser les fichiers: \`export/diversity_tsv/*_pcoa.tsv\`
@@ -671,6 +691,17 @@ Coordonnées prêtes pour visualisation
 
 ### Pour valeurs de diversité
 Utiliser: \`export/diversity_tsv/observed_features.tsv\`, \`shannon.tsv\`, etc.
+
+## ⚠️ NOTES IMPORTANTES
+
+**Absence de raréfaction:**
+- Les analyses de diversité utilisent TOUTES les séquences
+- Les métriques de richesse/diversité reflètent la profondeur réelle de séquençage
+- Les résultats peuvent être influencés par les différences de couverture entre échantillons
+
+**Correction des doublons:**
+- $duplicates_found fichier(s) en doublon détecté(s) et ignoré(s) lors de la génération du manifest
+- Le manifest a été validé pour l'unicité des sample-id et des chemins de fichiers
 
 ## ✅ PIPELINE TERMINÉ AVEC SUCCÈS
 
@@ -682,7 +713,7 @@ log ""
 log "==================== FICHIERS PRINCIPAUX ===================="
 log "📊 Barplots: ${ROOTDIR}/05_QIIME2/visual/taxa-bar-plots.qzv"
 log "📊 PCoA: ${ROOTDIR}/05_QIIME2/visual/Emperor-*.qzv"
-log "📊 Table ASV: ${ROOTDIR}/05_QIIME2/export/subtables/RarTable-all/ASV.txt"
+log "📊 Table ASV: ${ROOTDIR}/05_QIIME2/export/core/table_tsv/ASV.txt"
 log "📊 Diversité TSV: ${ROOTDIR}/05_QIIME2/export/diversity_tsv/"
 log "📄 Rapport: ${ROOTDIR}/05_QIIME2/RAPPORT_FINAL.md"
 log ""
