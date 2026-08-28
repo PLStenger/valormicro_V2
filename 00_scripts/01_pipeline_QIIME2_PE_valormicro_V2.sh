@@ -19,6 +19,10 @@ set -Eeuo pipefail
 shopt -s nullglob
 IFS=$'\n\t'
 
+export JAVA_HOME="${JAVA_HOME:-}"
+
+trap 'echo "[ERREUR] Ligne ${LINENO}: ${BASH_COMMAND}" >&2' ERR
+
 # -------------------------------- CONFIGURATION -----------------------------
 PROJECT_DIR="/nvme/bio/data_fungi/valormicro_V2"
 RAW_DIR="${PROJECT_DIR}/01_raw_data"
