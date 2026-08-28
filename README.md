@@ -1,5 +1,5 @@
 # valormicro_V2
-Characterization of marine microbial resources for analysis and enhancement of New Caledonia's natural heritage - Project from Drs **Anton Véronique** (CNRS/IRD Nouméa - New Caledonia)
+Characterization of marine microbial resources for analysis and enhancement of New Caledonia's natural heritage - Project from Drs **Véronique Anton** (CNRS/IRD Nouméa - New Caledonia)
 
 This project is a continuation and extension of the Valormicro project, which led to the publication of this article: 
 
