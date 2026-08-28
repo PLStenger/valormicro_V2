@@ -29,18 +29,19 @@ TRIMMOMATIC_HEAP="60G"
 QIIME_THREADS=8
 TMPDIR_BASE="${PROJECT_DIR}/tmp"
 
-# Environnements Conda : modifier ces noms si necessaire.
+# Environnements Conda 
 FASTQC_ENV="fastqc"
 MULTIQC_ENV="multiqc"
 TRIMMOMATIC_ENV="trimmomatic"
 QIIME2_ENV="qiime2-2021.4"
+EXCEL_ENV="excel_tools"
 
 # Fichier FASTA d'adaptateurs Trimmomatic. Obligatoire seulement si
 # TRIMMOMATIC_ADAPTERS=true.
 ADAPTER_FILE="${PROJECT_DIR}/99_softwares/adapters_sequences.fasta"
 TRIMMOMATIC_ADAPTERS=true
 
-# Parametres de trimming (reprennent les anciens scripts).
+# Parametres de trimming.
 LEADING=30
 TRAILING=30
 SLIDINGWINDOW="26:30"
@@ -133,9 +134,26 @@ export TMPDIR="${TMPDIR_BASE}"
 log "Demarrage du pipeline dans ${RESULTS_DIR}"
 log "Fichier d'informations : ${INFO_XLSX}"
 
-# 1. Conversion de l'Excel en TSV, manifeste PE et metadata QIIME 2.
+# 1. Conversion de l'Excel en TSV, manifest et metadata QIIME 2.
 log "Creation de samples.tsv, manifest_pe.tsv et sample-metadata.tsv"
-python3 - "${INFO_XLSX}" "${SAMPLE_SHEET}" "${MANIFEST}" "${METADATA}" "${CLEAN_DIR}" <<'PY'
+
+activate_env "${EXCEL_ENV}"
+
+python - <<'PY'
+try:
+    import pandas
+    import openpyxl
+except ModuleNotFoundError as error:
+    raise SystemExit(
+        "ERREUR : module Python absent : "
+        f"{error.name}. Activez ou creez un environnement contenant pandas et openpyxl."
+    )
+
+print(f"pandas={pandas.__version__}")
+print(f"openpyxl={openpyxl.__version__}")
+PY
+
+python - "${INFO_XLSX}" "${SAMPLE_SHEET}" "${MANIFEST}" "${METADATA}" "${CLEAN_DIR}" <<'PY'
 import os
 import re
 import sys
