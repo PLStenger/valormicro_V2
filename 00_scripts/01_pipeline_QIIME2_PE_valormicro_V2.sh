@@ -15,6 +15,8 @@
 # Reprendre une execution : bash 01_pipeline_QIIME2_PE_valormicro_V2.sh
 # ============================================================================
 
+set -Eeuo pipefail
+shopt -s nullglob
 IFS=$'\n\t'
 
 # -------------------------------- CONFIGURATION -----------------------------
@@ -171,13 +173,38 @@ missing = [c for c in required if c not in df.columns]
 if missing:
     raise SystemExit(f"Colonnes absentes du tableur : {', '.join(missing)}. Colonnes disponibles : {', '.join(df.columns)}")
 
-# Enleve les lignes entierement vides puis verifie les champs indispensables.
-df = df.dropna(how="all").copy()
+# Ne conservent que les lignes definissant reellement un echantillon :
+# R1, R2 et New_label doivent tous etre renseignes.
+#
+# Les lignes vides ainsi que les lignes de notes/commentaires en fin de feuille
+# sont ignorees. Une ligne partiellement renseignee est consideree comme une
+# erreur, car elle pourrait traduire un echantillon mal documente.
+
 for col in required:
     df[col] = df[col].fillna("").astype(str).str.strip()
-invalid = df.index[(df["R1"] == "") | (df["R2"] == "") | (df["New_label"] == "")].tolist()
-if invalid:
-    raise SystemExit(f"Lignes Excel incompletes (index pandas) : {invalid}")
+
+is_sample = (df["R1"] != "") | (df["R2"] != "") | (df["New_label"] != "")
+partial_rows = df.loc[
+    is_sample &
+    ((df["R1"] == "") | (df["R2"] == "") | (df["New_label"] == "")),
+    ["R1", "R2", "New_label"]
+]
+
+if not partial_rows.empty:
+    raise SystemExit(
+        "Lignes partiellement renseignees dans le tableur "
+        "(R1, R2 et New_label sont obligatoires) :\n"
+        + partial_rows.to_string()
+    )
+
+df = df.loc[
+    (df["R1"] != "") &
+    (df["R2"] != "") &
+    (df["New_label"] != "")
+].copy()
+
+if df.empty:
+    raise SystemExit("Aucun echantillon valide avec R1, R2 et New_label n'a ete trouve.")
 
 # Les ID QIIME 2 doivent etre uniques et ne pas contenir de blancs.
 df["sample-id"] = df["New_label"].str.replace(r"\s+", "_", regex=True)
