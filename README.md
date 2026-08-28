@@ -9,10 +9,6 @@ This project is a continuation and extension of the Valormicro project, which le
 
 ➡️ [Ouvrir la carte interactive des sites Valormicro](https://plstenger.github.io/99_Map_Valormicro_V2_sites.html)
 
-
-➡️ [Test](https://github.com/PLStenger/valormicro_V2/blob/main/99_Map_Valormicro_V2_sites.html)
-
-
 ### Installing pipeline :
 
 First, open your terminal. Then, run these two command lines :
