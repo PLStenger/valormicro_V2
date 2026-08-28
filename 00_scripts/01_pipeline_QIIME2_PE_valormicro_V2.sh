@@ -20,6 +20,7 @@ shopt -s nullglob
 IFS=$'\n\t'
 
 export JAVA_HOME="${JAVA_HOME:-}"
+export JAVA_LD_LIBRARY_PATH="${JAVA_LD_LIBRARY_PATH:-}"
 
 trap 'echo "[ERREUR] Ligne ${LINENO}: ${BASH_COMMAND}" >&2' ERR
 
