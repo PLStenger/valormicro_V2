@@ -5,9 +5,9 @@ This project is a continuation and extension of the Valormicro project, which le
 
 *Stenger, P.-L., Majorel, C., Valette, L., Ihage, W., Jardin-Camps, M., Jourand, P., & Anton-Leberre, V. (2026). Spatial structuring dominates over seasonality in tropical coastal microbiomes: Insights from New Caledonia's Indo-Pacific lagoon. Journal of Environmental Quality, 55, e70215. https://doi.org/10.1002/jeq2.70215*
 
-## Carte interactive du projet Valormicro V2
+## Interactive map of Valormicro V2 project
 
-➡️ [Ouvrir la carte interactive des sites Valormicro](https://plstenger.github.io/99_Map_Valormicro_V2_sites.html)
+➡️ [Open the interactive map of Valormicro V2 sites](https://plstenger.github.io/99_Map_Valormicro_V2_sites.html)
 
 ### Installing pipeline :
 
