@@ -52,7 +52,7 @@ conda run -n "${QIIME_ENV}" qiime --version \
     || die "QIIME2 ne demarre pas dans l'environnement ${QIIME_ENV}."
 
 
-cd "${RESULTS_DIR}"
+cd "${RESULTS_DIR}/05_qiime2"
 
 conda run -n "${QIIME_ENV}" qiime diversity core-metrics-phylogenetic \
        --i-phylogeny tree/rooted-tree.qza \
