@@ -13,7 +13,7 @@ eval "$(conda shell.bash hook)"
 conda activate qiime2-amplicon-2025.7
 
 qiime diversity alpha-rarefaction \
-  --i-table core/Table.qza \
+  --i-table core/table.qza \
   --i-phylogeny tree/rooted-tree.qza \
   --p-max-depth 15959 \
   --p-min-depth 1 \
