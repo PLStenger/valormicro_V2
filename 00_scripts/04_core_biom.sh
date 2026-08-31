@@ -54,7 +54,7 @@ conda run -n "${QIIME_ENV}" qiime --version \
 
 cd "${RESULTS_DIR}"
 
-qiime diversity core-metrics-phylogenetic \
+conda run -n "${QIIME_ENV}" qiime diversity core-metrics-phylogenetic \
        --i-phylogeny tree/rooted-tree.qza \
        --i-table core/table.qza \
        --p-sampling-depth 3547 \
@@ -65,21 +65,21 @@ qiime diversity core-metrics-phylogenetic \
        --o-evenness-vector core/Vector-evenness.qza \
        --o-faith-pd-vector core/Vector-faith_pd.qza
      
-qiime feature-table core-features \
+conda run -n "${QIIME_ENV}" qiime feature-table core-features \
         --i-table core/RarTable.qza \
         --p-min-fraction 0.1 \
         --p-max-fraction 1.0 \
         --p-steps 10 \
         --o-visualization visual/CoreBiom-all.qzv  
         
-qiime tools export --input-path core/RarTable.qza --output-path export/core/RarTable   
-qiime tools export --input-path visual/CoreBiom-all.qzv --output-path export/visual/CoreBiom-all
+conda run -n "${QIIME_ENV}" qiime tools export --input-path core/RarTable.qza --output-path export/core/RarTable   
+conda run -n "${QIIME_ENV}" qiime tools export --input-path visual/CoreBiom-all.qzv --output-path export/visual/CoreBiom-all
 biom convert -i export/core/RarTable/feature-table.biom -o export/core/RarTable/table-from-biom.tsv --to-tsv
 sed '1d ; s/\#OTU ID/ASV_ID/' export/core/RarTable/table-from-biom.tsv > export/core/RarTable/ASV.tsv
 
-qiime tools export --input-path core/Vector-faith_pd.qza --output-path export/core/Vector-faith_pd
-qiime tools export --input-path core/Vector-evenness.qza --output-path export/core/Vector-evenness
-qiime tools export --input-path core/Vector-shannon.qza --output-path export/core/Vector-shannon
-qiime tools export --input-path core/Vector-observed_asv.qza --output-path export/core/VVector-observed_asv
+conda run -n "${QIIME_ENV}" qiime tools export --input-path core/Vector-faith_pd.qza --output-path export/core/Vector-faith_pd
+conda run -n "${QIIME_ENV}" qiime tools export --input-path core/Vector-evenness.qza --output-path export/core/Vector-evenness
+conda run -n "${QIIME_ENV}" qiime tools export --input-path core/Vector-shannon.qza --output-path export/core/Vector-shannon
+conda run -n "${QIIME_ENV}" qiime tools export --input-path core/Vector-observed_asv.qza --output-path export/core/VVector-observed_asv
 
-qiime tools export --input-path core/taxonomy.qza --output-path export/taxonomy
+conda run -n "${QIIME_ENV}" qiime tools export --input-path core/taxonomy.qza --output-path export/taxonomy
