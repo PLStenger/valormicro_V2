@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Core diversity metrics + core microbiome
-# QIIME2 amplicon 2025.7
+# Reprise : export TSV des resultats QIIME2 deja calcules
+# - table ASV rarefiee : BIOM -> TSV
+# - metriques alpha : Faith PD, Shannon, evenness, observed features
+# - taxonomie
+# - distances beta et PCoA
+# - visualisations QZV
 # =============================================================================
 
 set -Eeuo pipefail
@@ -10,52 +14,37 @@ shopt -s nullglob
 # ==================== CONFIGURATION ====================
 
 ROOTDIR="/nvme/bio/data_fungi/valormicro_V2"
-PROJECT_DIR="${ROOTDIR}"
-RESULTS_DIR="${PROJECT_DIR}/02_amplicon_pipeline"
+RESULTS_DIR="${ROOTDIR}/02_amplicon_pipeline"
 
-DATABASE="${RESULTS_DIR}/04_database_files"
 QIIME_DIR="${RESULTS_DIR}/05_qiime2"
 QIIME_CORE_DIR="${QIIME_DIR}/core"
-QIIME_TREE_DIR="${QIIME_DIR}/tree"
-QIIME_VISUAL_DIR="${QIIME_DIR}/visual"
 QIIME_EXPORT_DIR="${QIIME_DIR}/export"
 LOG_DIR="${RESULTS_DIR}/logs"
 
-NTHREADS=16
-SAMPLING_DEPTH=3547
-
-TMPDIR="${ROOTDIR}/tmp"
 QIIME_ENV="qiime2-amplicon-2025.7"
+BIOM_ENV="biom-format"
 
-# La table est celle compatible avec l'arbre, construit depuis les ASV
-# conservés dans au moins deux échantillons.
-TABLE="${QIIME_CORE_DIR}/table_min2samples.qza"
-ROOTED_TREE="${QIIME_TREE_DIR}/rooted-tree.qza"
-METADATA="${DATABASE}/sample-metadata.tsv"
-TAXONOMY="${QIIME_CORE_DIR}/taxonomy.qza"
-
-# Toutes les sorties core-metrics sont centralisées ici.
+SAMPLING_DEPTH=3547
 CORE_METRICS_DIR="${QIIME_CORE_DIR}/core-metrics-depth${SAMPLING_DEPTH}"
 
-# Exports lisibles hors artefacts QIIME2.
+RAREFIED_TABLE="${CORE_METRICS_DIR}/rarefied_table.qza"
+FAITH_PD="${CORE_METRICS_DIR}/faith_pd_vector.qza"
+SHANNON="${CORE_METRICS_DIR}/shannon_vector.qza"
+EVENNESS="${CORE_METRICS_DIR}/evenness_vector.qza"
+OBSERVED_FEATURES="${CORE_METRICS_DIR}/observed_features_vector.qza"
+
+TAXONOMY="${QIIME_CORE_DIR}/taxonomy.qza"
+
 EXPORT_CORE_DIR="${QIIME_EXPORT_DIR}/core-metrics-depth${SAMPLING_DEPTH}"
-EXPORT_VISUAL_DIR="${QIIME_EXPORT_DIR}/visual/core-metrics-depth${SAMPLING_DEPTH}"
 EXPORT_TAXONOMY_DIR="${QIIME_EXPORT_DIR}/taxonomy"
+EXPORT_VISUAL_DIR="${QIIME_EXPORT_DIR}/visual/core-metrics-depth${SAMPLING_DEPTH}"
 
-mkdir -p \
-    "${TMPDIR}" \
-    "${LOG_DIR}" \
-    "${QIIME_EXPORT_DIR}" \
-    "${EXPORT_CORE_DIR}" \
-    "${EXPORT_VISUAL_DIR}" \
-    "${EXPORT_TAXONOMY_DIR}"
-
-export TMPDIR
+mkdir -p "${LOG_DIR}" "${EXPORT_CORE_DIR}" "${EXPORT_TAXONOMY_DIR}" "${EXPORT_VISUAL_DIR}"
 
 # ==================== FONCTIONS ====================
 
 log() {
-    printf '[%(%F %T)T] %s\n' -1 "$*" | tee -a "${LOG_DIR}/04_core_biom.log"
+    printf '[%(%F %T)T] %s\n' -1 "$*" | tee -a "${LOG_DIR}/04_export_core_metrics.log"
 }
 
 die() {
@@ -69,203 +58,129 @@ qiime_run() {
     conda run -n "${QIIME_ENV}" qiime "$@"
 }
 
+export_qza() {
+    local artifact="$1"
+    local destination="$2"
+
+    [[ -f "${artifact}" ]] || die "Artefact QIIME2 absent : ${artifact}"
+
+    rm -rf "${destination}"
+    mkdir -p "${destination}"
+
+    log "Export : $(basename "${artifact}")"
+    qiime_run tools export \
+        --input-path "${artifact}" \
+        --output-path "${destination}"
+}
+
 # ==================== CONTROLES ====================
 
-log "Debut du calcul des core diversity metrics"
-log "Environnement QIIME2 : ${QIIME_ENV}"
-log "Nombre de threads : ${NTHREADS}"
-log "Profondeur de rarefaction : ${SAMPLING_DEPTH}"
+log "Debut des exports des resultats deja calcules"
 
 command -v conda >/dev/null 2>&1 \
     || die "Conda est introuvable dans le PATH."
 
 qiime_run --version \
-    || die "QIIME2 ne demarre pas dans l'environnement ${QIIME_ENV}."
+    || die "QIIME2 ne demarre pas dans ${QIIME_ENV}."
 
-[[ -f "${TABLE}" ]] \
-    || die "Table ASV compatible avec l'arbre absente : ${TABLE}"
+conda run -n "${BIOM_ENV}" biom --help >/dev/null \
+    || die "La commande biom est absente de l'environnement ${BIOM_ENV}."
 
-[[ -f "${ROOTED_TREE}" ]] \
-    || die "Arbre enracine absent : ${ROOTED_TREE}"
+[[ -f "${RAREFIED_TABLE}" ]] \
+    || die "Table rarefiee absente : ${RAREFIED_TABLE}"
 
-[[ -f "${METADATA}" ]] \
-    || die "Metadata absente : ${METADATA}"
+[[ -f "${FAITH_PD}" ]] \
+    || die "Faith PD absent : ${FAITH_PD}"
+
+[[ -f "${SHANNON}" ]] \
+    || die "Shannon absent : ${SHANNON}"
+
+[[ -f "${EVENNESS}" ]] \
+    || die "Evenness absent : ${EVENNESS}"
+
+[[ -f "${OBSERVED_FEATURES}" ]] \
+    || die "Observed features absent : ${OBSERVED_FEATURES}"
 
 [[ -f "${TAXONOMY}" ]] \
     || die "Taxonomie absente : ${TAXONOMY}"
 
-# ==================== CORE METRICS ====================
+# ==================== TABLE ASV RAREFIEE ====================
 
-cd "${QIIME_DIR}" || die "Impossible d'acceder a ${QIIME_DIR}"
+TABLE_EXPORT_DIR="${EXPORT_CORE_DIR}/rarefied_table"
 
-if [[ -d "${CORE_METRICS_DIR}" ]]; then
-    log "Suppression de l'ancien repertoire core metrics : ${CORE_METRICS_DIR}"
-    rm -rf "${CORE_METRICS_DIR}"
-fi
+export_qza "${RAREFIED_TABLE}" "${TABLE_EXPORT_DIR}"
 
-log "Calcul des metriques alpha et beta de diversite"
-
-qiime_run diversity core-metrics-phylogenetic \
-    --i-phylogeny "${ROOTED_TREE}" \
-    --i-table "${TABLE}" \
-    --p-sampling-depth "${SAMPLING_DEPTH}" \
-    --m-metadata-file "${METADATA}" \
-    --p-n-jobs-or-threads "${NTHREADS}" \
-    --output-dir "${CORE_METRICS_DIR}"
-
-RAREFIED_TABLE="${CORE_METRICS_DIR}/rarefied_table.qza"
-FAITH_PD="${CORE_METRICS_DIR}/faith_pd_vector.qza"
-EVENNESS="${CORE_METRICS_DIR}/evenness_vector.qza"
-SHANNON="${CORE_METRICS_DIR}/shannon_vector.qza"
-OBSERVED_ASV="${CORE_METRICS_DIR}/observed_features_vector.qza"
-
-[[ -f "${RAREFIED_TABLE}" ]] \
-    || die "Table raréfiee absente : ${RAREFIED_TABLE}"
-
-[[ -f "${FAITH_PD}" ]] \
-    || die "Vecteur Faith PD absent : ${FAITH_PD}"
-
-[[ -f "${EVENNESS}" ]] \
-    || die "Vecteur Pielou absent : ${EVENNESS}"
-
-[[ -f "${SHANNON}" ]] \
-    || die "Vecteur Shannon absent : ${SHANNON}"
-
-[[ -f "${OBSERVED_ASV}" ]] \
-    || die "Vecteur observed features absent : ${OBSERVED_ASV}"
-
-log "Core diversity metrics terminees"
-
-# ==================== CORE MICROBIOME ====================
-
-CORE_BIOM_QZV="${QIIME_VISUAL_DIR}/CoreBiom-all-depth${SAMPLING_DEPTH}.qzv"
-
-rm -f "${CORE_BIOM_QZV}"
-
-log "Calcul des ASV du core microbiome"
-
-qiime_run feature-table core-features \
-    --i-table "${RAREFIED_TABLE}" \
-    --p-min-fraction 0.1 \
-    --p-max-fraction 1.0 \
-    --p-steps 10 \
-    --o-visualization "${CORE_BIOM_QZV}"
-
-# ==================== EXPORT TABLE RAREFIEE ====================
-
-rm -rf "${EXPORT_CORE_DIR}/rarefied_table"
-mkdir -p "${EXPORT_CORE_DIR}/rarefied_table"
-
-log "Export de la table rarefiee"
-
-qiime_run tools export \
-    --input-path "${RAREFIED_TABLE}" \
-    --output-path "${EXPORT_CORE_DIR}/rarefied_table"
-
-BIOM_TABLE="${EXPORT_CORE_DIR}/rarefied_table/feature-table.biom"
-TSV_TABLE="${EXPORT_CORE_DIR}/rarefied_table/table-from-biom.tsv"
-ASV_TABLE="${EXPORT_CORE_DIR}/rarefied_table/ASV.tsv"
+BIOM_TABLE="${TABLE_EXPORT_DIR}/feature-table.biom"
+TSV_TABLE="${TABLE_EXPORT_DIR}/table-from-biom.tsv"
+ASV_TABLE="${TABLE_EXPORT_DIR}/ASV.tsv"
 
 [[ -f "${BIOM_TABLE}" ]] \
-    || die "Export BIOM absent : ${BIOM_TABLE}"
+    || die "Fichier BIOM absent apres export : ${BIOM_TABLE}"
 
-command -v biom >/dev/null 2>&1 \
-    || die "La commande biom est introuvable. Activez ou installez l'environnement biom-format."
+log "Conversion BIOM vers TSV"
 
-biom convert \
+conda run -n "${BIOM_ENV}" biom convert \
     -i "${BIOM_TABLE}" \
     -o "${TSV_TABLE}" \
     --to-tsv
 
+# biom convert ajoute une ligne de commentaire ; elle est retiree ici.
+# L'en-tete #OTU ID est renomme ASV_ID.
 sed '1d; s/^#OTU ID/ASV_ID/' "${TSV_TABLE}" > "${ASV_TABLE}"
 
-# ==================== EXPORT METRIQUES ALPHA ====================
+[[ -s "${ASV_TABLE}" ]] \
+    || die "Echec de creation de la table ASV TSV : ${ASV_TABLE}"
 
-log "Export des vecteurs alpha-diversite"
+# ==================== METRIQUES ALPHA ====================
 
-for artifact in \
-    "${FAITH_PD}" \
-    "${EVENNESS}" \
-    "${SHANNON}" \
-    "${OBSERVED_ASV}"; do
+export_qza "${FAITH_PD}" "${EXPORT_CORE_DIR}/faith_pd"
+export_qza "${SHANNON}" "${EXPORT_CORE_DIR}/shannon"
+export_qza "${EVENNESS}" "${EXPORT_CORE_DIR}/evenness"
+export_qza "${OBSERVED_FEATURES}" "${EXPORT_CORE_DIR}/observed_features"
 
-    artifact_name="$(basename "${artifact}" .qza)"
-    artifact_export_dir="${EXPORT_CORE_DIR}/${artifact_name}"
+# ==================== TAXONOMIE ====================
 
-    rm -rf "${artifact_export_dir}"
-    mkdir -p "${artifact_export_dir}"
+export_qza "${TAXONOMY}" "${EXPORT_TAXONOMY_DIR}"
 
-    qiime_run tools export \
-        --input-path "${artifact}" \
-        --output-path "${artifact_export_dir}"
-done
+[[ -f "${EXPORT_TAXONOMY_DIR}/taxonomy.tsv" ]] \
+    || die "taxonomy.tsv absent apres export : ${EXPORT_TAXONOMY_DIR}/taxonomy.tsv"
 
-# ==================== EXPORT METRIQUES BETA ====================
-
-log "Export des matrices de distance et PCoA"
+# ==================== BETA DIVERSITE ====================
 
 for artifact in \
+    "${CORE_METRICS_DIR}/bray_curtis_distance_matrix.qza" \
+    "${CORE_METRICS_DIR}/jaccard_distance_matrix.qza" \
     "${CORE_METRICS_DIR}/unweighted_unifrac_distance_matrix.qza" \
     "${CORE_METRICS_DIR}/weighted_unifrac_distance_matrix.qza" \
-    "${CORE_METRICS_DIR}/jaccard_distance_matrix.qza" \
-    "${CORE_METRICS_DIR}/bray_curtis_distance_matrix.qza" \
-    "${CORE_METRICS_DIR}/unweighted_unifrac_pcoa_results.qza" \
-    "${CORE_METRICS_DIR}/weighted_unifrac_pcoa_results.qza" \
+    "${CORE_METRICS_DIR}/bray_curtis_pcoa_results.qza" \
     "${CORE_METRICS_DIR}/jaccard_pcoa_results.qza" \
-    "${CORE_METRICS_DIR}/bray_curtis_pcoa_results.qza"; do
-
-    [[ -f "${artifact}" ]] || die "Artefact beta-diversite absent : ${artifact}"
+    "${CORE_METRICS_DIR}/unweighted_unifrac_pcoa_results.qza" \
+    "${CORE_METRICS_DIR}/weighted_unifrac_pcoa_results.qza"; do
 
     artifact_name="$(basename "${artifact}" .qza)"
-    artifact_export_dir="${EXPORT_CORE_DIR}/${artifact_name}"
-
-    rm -rf "${artifact_export_dir}"
-    mkdir -p "${artifact_export_dir}"
-
-    qiime_run tools export \
-        --input-path "${artifact}" \
-        --output-path "${artifact_export_dir}"
+    export_qza "${artifact}" "${EXPORT_CORE_DIR}/${artifact_name}"
 done
 
-# ==================== EXPORT VISUALISATIONS ====================
-
-log "Export des visualisations QIIME2"
+# ==================== VISUALISATIONS ====================
 
 for qzv in \
-    "${CORE_BIOM_QZV}" \
-    "${CORE_METRICS_DIR}/unweighted_unifrac_emperor.qzv" \
-    "${CORE_METRICS_DIR}/weighted_unifrac_emperor.qzv" \
+    "${CORE_METRICS_DIR}/bray_curtis_emperor.qzv" \
     "${CORE_METRICS_DIR}/jaccard_emperor.qzv" \
-    "${CORE_METRICS_DIR}/bray_curtis_emperor.qzv"; do
+    "${CORE_METRICS_DIR}/unweighted_unifrac_emperor.qzv" \
+    "${CORE_METRICS_DIR}/weighted_unifrac_emperor.qzv"; do
 
     [[ -f "${qzv}" ]] || die "Visualisation absente : ${qzv}"
 
     qzv_name="$(basename "${qzv}" .qzv)"
-    qzv_export_dir="${EXPORT_VISUAL_DIR}/${qzv_name}"
-
-    rm -rf "${qzv_export_dir}"
-    mkdir -p "${qzv_export_dir}"
-
-    qiime_run tools export \
-        --input-path "${qzv}" \
-        --output-path "${qzv_export_dir}"
+    export_qza "${qzv}" "${EXPORT_VISUAL_DIR}/${qzv_name}"
 done
 
-# ==================== EXPORT TAXONOMIE ====================
+# ==================== FIN ====================
 
-rm -rf "${EXPORT_TAXONOMY_DIR}"
-mkdir -p "${EXPORT_TAXONOMY_DIR}"
-
-log "Export de la taxonomie"
-
-qiime_run tools export \
-    --input-path "${TAXONOMY}" \
-    --output-path "${EXPORT_TAXONOMY_DIR}"
-
-[[ -f "${EXPORT_TAXONOMY_DIR}/taxonomy.tsv" ]] \
-    || die "taxonomy.tsv absent apres export."
-
-log "Pipeline core biom termine avec succes."
-log "Resultats QIIME2 : ${CORE_METRICS_DIR}"
-log "Exports lisibles : ${EXPORT_CORE_DIR}"
+log "Exports termines avec succes."
+log "Table ASV TSV : ${ASV_TABLE}"
+log "Faith PD TSV : ${EXPORT_CORE_DIR}/faith_pd/alpha-diversity.tsv"
+log "Shannon TSV : ${EXPORT_CORE_DIR}/shannon/alpha-diversity.tsv"
+log "Evenness TSV : ${EXPORT_CORE_DIR}/evenness/alpha-diversity.tsv"
+log "Observed features TSV : ${EXPORT_CORE_DIR}/observed_features/alpha-diversity.tsv"
 log "Taxonomie TSV : ${EXPORT_TAXONOMY_DIR}/taxonomy.tsv"
