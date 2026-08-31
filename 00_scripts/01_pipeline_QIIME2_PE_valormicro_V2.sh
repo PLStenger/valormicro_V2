@@ -40,7 +40,7 @@ EXCEL_ENV="excel_tools"
 FASTQC_ENV="fastqc"
 MULTIQC_ENV="multiqc"
 TRIMMOMATIC_ENV="trimmomatic"
-QIIME2_ENV="qiime2-2021.4"
+QIIME2_ENV="qiime2-amplicon-2025.7"
 
 # Fichier d'adaptateurs requis si TRIMMOMATIC_ADAPTERS=true.
 ADAPTER_FILE="${PROJECT_DIR}/99_softwares/adapters_sequences.fasta"
@@ -64,9 +64,9 @@ DADA2_CHIM_METHOD="consensus"
 MIN_SAMPLES_FEATURE=2
 
 # Active/desactive les grandes etapes.
-RUN_FASTQC_RAW=true
-RUN_TRIMMOMATIC=true
-RUN_FASTQC_CLEAN=true
+RUN_FASTQC_RAW=false
+RUN_TRIMMOMATIC=false
+RUN_FASTQC_CLEAN=false
 RUN_QIIME_IMPORT=true
 RUN_DADA2=true
 RUN_FILTER=true
