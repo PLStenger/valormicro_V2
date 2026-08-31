@@ -12,10 +12,32 @@ cd $WORKING_DIRECTORY
 eval "$(conda shell.bash hook)"
 conda activate qiime2-amplicon-2025.7
 
+##########################################################################################
+# Arbre sans contingence
+
+   qiime alignment mafft \
+        --i-sequences core/rep-seqs.qza \
+        --p-n-threads 8 \
+        --o-alignment tree/aligned-rep-seqs.qza
+
+    qiime alignment mask \
+        --i-alignment tree/aligned-rep-seqs.qza \
+        --o-masked-alignment tree/masked-aligned-rep-seqs.qza
+
+    qiime phylogeny fasttree \
+        --i-alignment tree/masked-aligned-rep-seqs.qza \
+        --o-tree tree/unrooted-tree.qza
+
+    qiime phylogeny midpoint-root \
+        --i-tree tree/unrooted-tree.qza \
+        --o-rooted-tree tree/rooted-tree.qza
+##########################################################################################
+        
+
 qiime diversity alpha-rarefaction \
---i-table core/table_min2samples.qza \
+--i-table core/table.qza \
 --i-phylogeny tree/rooted-tree.qza \
-  --p-max-depth 12618 \
+  --p-max-depth 15959 \
   --p-min-depth 1 \
   --m-metadata-file $DATABASE/sample-metadata.tsv \
   --o-visualization visual/alpha-rarefaction.qzv
