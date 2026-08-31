@@ -28,3 +28,4 @@ First, open your terminal. Then, run these two command lines :
 
     # Run this for the final pipeline
     time nohup bash 01_pipeline_QIIME2_PE_valormicro_V2.sh &>  01_pipeline_QIIME2_PE_valormicro_V2.out
+    time nohup bash 02_rarefaction.sh &> 02_rarefaction.out
