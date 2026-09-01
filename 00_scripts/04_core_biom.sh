@@ -39,7 +39,7 @@ SAMPLING_DEPTH=3547
 # Table source.
 # Elle doit etre compatible avec tree/rooted-tree.qza, construit a partir des
 # ASV presents dans au moins deux echantillons.
-INPUT_TABLE="${QIIME_CORE_DIR}/table_min2samples.qza"
+INPUT_TABLE="${QIIME_CORE_DIR}/table.qza"
 
 # Arbre conserve comme controle de coherence et pour les analyses phylogenetiques.
 ROOTED_TREE="${QIIME_TREE_DIR}/rooted-tree.qza"
