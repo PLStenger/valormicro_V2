@@ -73,6 +73,15 @@ EXCEL_ENV="${EXCEL_ENV:-excel_tools}"
 NXF_PROFILE="${NXF_PROFILE:-}"
 
 JEDI=/nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline
+CACHE="$JEDI/container_cache"
+
+cd "$CACHE"
+
+ls -lh *biocontainers* 2>/dev/null
+
+ln -sfn \
+  "$CACHE/biocontainers-v1.2.0_cv1.sif" \
+  "$CACHE/containers.biocontainers.pro-s3-SingImgsRepo-biocontainers-v1.2.0_cv1-biocontainersv1.2.0cv1.img.img"
 
 mkdir -p "$JEDI/tmp/qiime2"
 mkdir -p "$JEDI/tmp/singularity"
@@ -163,18 +172,18 @@ export NUMBA_CACHE_DIR="$TMPDIR/numba"
 
 mkdir -p "$TMPDIR/qiime2" "$XDG_CONFIG_HOME" "$MPLCONFIGDIR" "$NUMBA_CACHE_DIR"
 
-cat > /nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline/singularity_timeout.config <<'EOF'
+cat > "${JEDI_ROOT}/singularity_timeout.config" <<EOF
 singularity {
     enabled = true
     autoMounts = true
     pullTimeout = '2h'
-    cacheDir = '/nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline/container_cache'
-    runOptions = '--bind /nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline/tmp:/nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline/tmp'
+    cacheDir = '${JEDI_ROOT}/container_cache'
+    runOptions = '--bind ${JEDI_ROOT}/tmp:${JEDI_ROOT}/tmp'
 }
 
 process {
     withName: 'NFCORE_AMPLISEQ:AMPLISEQ:FORMATTAXONOMY' {
-        container = '/nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline/container_cache/biocontainers-v1.2.0_cv1.sif'
+        container = '${JEDI_ROOT}/container_cache/biocontainers-v1.2.0_cv1.sif'
     }
 }
 EOF
@@ -390,6 +399,7 @@ exclude_taxa: "none"
 min_frequency: 1
 min_samples: 1
 diversity_rarefaction_depth: ${DIVERSITY_RAREFACTION_DEPTH}
+skip_alpha_rarefaction: true
 report_title: "JEDI valormicro - SILVA, PR2 et consensus merge pairs"
 YAML
 
