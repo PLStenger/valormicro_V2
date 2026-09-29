@@ -141,17 +141,26 @@ log "Amorces : ${FW_PRIMER} / ${RV_PRIMER}"
 nextflow -version
 
 # Python avec pandas/openpyxl : environnement historique si disponible, sinon
-# Python courant si les dependances sont deja installees.
-PYTHON_CMD=()
-if command -v conda >/dev/null 2>&1 && \
-   conda run -n "${EXCEL_ENV}" python -c 'import pandas, openpyxl' >/dev/null 2>&1; then
-    PYTHON_CMD=(conda run -n "${EXCEL_ENV}" python)
-elif command -v python3 >/dev/null 2>&1 && \
-     python3 -c 'import pandas, openpyxl' >/dev/null 2>&1; then
-    PYTHON_CMD=(python3)
-else
-    die "pandas/openpyxl absents. Installer ces paquets ou verifier l'environnement ${EXCEL_ENV}."
-fi
+# Chargement explicite de Conda, necessaire pour l'environnement excel_tools.
+command -v conda >/dev/null 2>&1 \
+    || die "Conda est introuvable dans le PATH."
+
+CONDA_BASE="$(conda info --base 2>/dev/null || true)"
+[[ -n "${CONDA_BASE}" && -f "${CONDA_BASE}/etc/profile.d/conda.sh" ]] \
+    || die "Impossible de localiser conda.sh."
+
+source "${CONDA_BASE}/etc/profile.d/conda.sh"
+
+conda activate "${EXCEL_ENV}" \
+    || die "Impossible d'activer l'environnement ${EXCEL_ENV}."
+
+command -v python >/dev/null 2>&1 \
+    || die "Python absent de l'environnement ${EXCEL_ENV}."
+
+python -c 'import pandas, openpyxl' \
+    || die "pandas et/ou openpyxl absents de l'environnement ${EXCEL_ENV}."
+
+PYTHON_CMD=(python)
 
 SAMPLESHEET="${INPUT_DIR}/samplesheet_jedi.tsv"
 METADATA="${INPUT_DIR}/metadata_jedi.tsv"
@@ -161,7 +170,7 @@ CONTROL_FLAG="${INPUT_DIR}/controls_detected.flag"
 
 log "Construction des entrees nf-core depuis ${INFO_XLSX}"
 "${PYTHON_CMD[@]}" - "${INFO_XLSX}" "${RAW_DIR}" "${SAMPLESHEET}" \
-    "${METADATA}" "${ID_MAP}" "${METADATA_FLAG}" "${CONTROL_FLAG}" <<'PY'
+"${METADATA}" "${ID_MAP}" "${METADATA_FLAG}" "${CONTROL_FLAG}" <<'PY'
 import re
 import sys
 import unicodedata
