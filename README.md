@@ -35,3 +35,18 @@ First, open your terminal. Then, run these two command lines :
 
     # JEDI pipeline
     time nohup bash 50_jedi_valormicro.sh &> 50_jedi_valormicro.out
+
+    ## /!\ if Nextflow or Java problems with JEDI pipeline, please run before:
+
+    conda create -y -n nextflow-java -c conda-forge openjdk=21
+    conda activate nextflow-java
+    java -version
+    conda activate nextflow-java
+    export JAVA_HOME="$CONDA_PREFIX"
+    export NXF_JAVA_HOME="$CONDA_PREFIX"
+    export JAVA_CMD="$CONDA_PREFIX/bin/java"
+    export PATH="$CONDA_PREFIX/bin:$PATH"
+    echo "CONDA_PREFIX = $CONDA_PREFIX"
+    echo "JAVA_CMD = $JAVA_CMD"
+    "$JAVA_CMD" -version
+    nextflow -version
