@@ -32,3 +32,6 @@ First, open your terminal. Then, run these two command lines :
     time nohup bash 03_taxonomy.sh &> 03_taxonomy.out
     time nohup bash 03_taxonomy_eukaryota.sh &> 03_taxonomy_eukaryota.out
     time nohup bash 04_core_biom.sh &> 04_core_biom.out
+
+    # JEDI pipeline
+    time nohup bash 50_jedi_valormicro.sh &> 50_jedi_valormicro.out
