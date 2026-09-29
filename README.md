@@ -50,3 +50,26 @@ First, open your terminal. Then, run these two command lines :
     echo "JAVA_CMD = $JAVA_CMD"
     "$JAVA_CMD" -version
     nextflow -version
+
+    # If problem with singularity, please run:
+
+    cat > /nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline/singularity_timeout.config <<'EOF'
+    singularity {
+        enabled = true
+        pullTimeout = '2h'
+        cacheDir = '/nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline/container_cache'
+    }
+    
+    process {
+        withName: 'NFCORE_AMPLISEQ:AMPLISEQ:FORMATTAXONOMY' {
+            container = 'docker://biocontainers/biocontainers:v1.2.0_cv1'
+        }
+    }
+    EOF
+    
+    export SINGULARITY_CACHEDIR=/nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline/container_cache
+    mkdir -p "$SINGULARITY_CACHEDIR"
+    
+    singularity pull \
+      "$SINGULARITY_CACHEDIR/biocontainers-v1.2.0_cv1.sif" \
+      "docker://biocontainers/biocontainers:v1.2.0_cv1"
