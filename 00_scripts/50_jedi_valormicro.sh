@@ -125,23 +125,21 @@ choose_profile() {
 }
 
 run_nextflow() {
-    local params_file="$1"
-    local work_subdir="$2"
-    log "Commande : nextflow run nf-core/ampliseq -r ${NFCORE_VERSION} -profile ${PROFILE} -params-file ${params_file} -work-dir ${work_subdir} -resume"
-   nextflow run nf-core/ampliseq \
-    -r "${NFCORE_VERSION}" \
-    -profile "${PROFILE}" \
-    -params-file "${params_file}" \
-    -work-dir "${work_subdir}" \
-    -resume \
-    -c "${JEDI_ROOT}/singularity_timeout.config"
+    local paramsfile="$1"
+    local worksubdir="$2"
+
+    log "Commande: nextflow run nf-core/ampliseq -r ${NFCORE_VERSION} -profile ${PROFILE} -params-file ${paramsfile} -work-dir ${worksubdir} -resume"
+
+    nextflow run nf-core/ampliseq \
+        -r "${NFCORE_VERSION}" \
+        -profile "${PROFILE}" \
+        -params-file "${paramsfile}" \
+        -work-dir "${worksubdir}" \
+        -resume \
+        -c "${JEDI_ROOT}/singularity_timeout.config"
 }
 
-cat > /nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline/singularity_timeout.config <<'EOF'
-singularity {
-    pullTimeout = '2h'
-}
-EOF
+
 
 # ----------------------------- PREPARATION -----------------------------------
 mkdir -p "${INPUT_DIR}" "${SILVA_OUT}" "${PR2_OUT}" "${INTEGRATED_OUT}" \
@@ -662,4 +660,4 @@ log "Rapport principal : ${SILVA_OUT}/summary_report/summary_report.html"
 log "MultiQC : ${SILVA_OUT}/multiqc/multiqc_report.html"
 log "ASV + taxonomie integree : ${INTEGRATED_OUT}/ASV_table_JEDI_with_taxonomy.tsv"
 log "Resume par domaine : ${INTEGRATED_OUT}/domain_summary.tsv"
-log "Courbes de rarefaction : ${SILVA_OUT}/qiime2/alpha-rarefaction/index.html"
+log "Alpha-rarefaction QIIME2 volontairement désactivée (skip_alpha_rarefaction: true)."
