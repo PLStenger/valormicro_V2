@@ -54,8 +54,10 @@ RV_PRIMER="${RV_PRIMER:-CCGYCAATTYMTTTRAGTTT}"
 # la chute de qualite mediane sous Q25. Pour imposer les longueurs du papier
 # (par exemple 231/230 pour des reads 2x250), definir :
 #   export JEDI_TRUNCLEN_F=231 JEDI_TRUNCLEN_R=230
-JEDI_TRUNCLEN_F="${JEDI_TRUNCLEN_F:-auto}"
-JEDI_TRUNCLEN_R="${JEDI_TRUNCLEN_R:-auto}"
+#JEDI_TRUNCLEN_F="${JEDI_TRUNCLEN_F:-auto}"
+#JEDI_TRUNCLEN_R="${JEDI_TRUNCLEN_R:-auto}"
+export JEDI_TRUNCLEN_F=231
+export JEDI_TRUNCLEN_R=230
 TRUNC_QMIN="${TRUNC_QMIN:-25}"
 TRUNC_RMIN="${TRUNC_RMIN:-0.75}"
 MAX_EE="${MAX_EE:-2}"
@@ -107,13 +109,20 @@ run_nextflow() {
     local params_file="$1"
     local work_subdir="$2"
     log "Commande : nextflow run nf-core/ampliseq -r ${NFCORE_VERSION} -profile ${PROFILE} -params-file ${params_file} -work-dir ${work_subdir} -resume"
-    nextflow run nf-core/ampliseq \
-        -r "${NFCORE_VERSION}" \
-        -profile "${PROFILE}" \
-        -params-file "${params_file}" \
-        -work-dir "${work_subdir}" \
-        -resume
+   nextflow run nf-core/ampliseq \
+    -r "${NFCORE_VERSION}" \
+    -profile "${PROFILE}" \
+    -params-file "${params_file}" \
+    -work-dir "${work_subdir}" \
+    -resume \
+    -c "${JEDI_ROOT}/singularity_timeout.config"
 }
+
+cat > /nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline/singularity_timeout.config <<'EOF'
+singularity {
+    pullTimeout = '2h'
+}
+EOF
 
 # ----------------------------- PREPARATION -----------------------------------
 mkdir -p "${INPUT_DIR}" "${SILVA_OUT}" "${PR2_OUT}" "${INTEGRATED_OUT}" \
@@ -125,6 +134,7 @@ export TMPDIR="${TMP_DIR}"
 export NXF_HOME="${JEDI_ROOT}/.nextflow"
 export NXF_OPTS="${NXF_OPTS:--Xms1g -Xmx4g}"
 export NXF_SINGULARITY_CACHEDIR="${NXF_SINGULARITY_CACHEDIR:-${JEDI_ROOT}/container_cache}"
+export NXF_SINGULARITY_PULL_TIMEOUT="2h"
 export APPTAINER_CACHEDIR="${APPTAINER_CACHEDIR:-${JEDI_ROOT}/container_cache}"
 mkdir -p "${NXF_HOME}" "${NXF_SINGULARITY_CACHEDIR}"
 
