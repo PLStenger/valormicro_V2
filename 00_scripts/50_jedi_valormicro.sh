@@ -72,6 +72,16 @@ EXCEL_ENV="${EXCEL_ENV:-excel_tools}"
 # Profil d'execution : si NXF_PROFILE est vide, detection automatique.
 NXF_PROFILE="${NXF_PROFILE:-}"
 
+JEDI=/nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline
+
+mkdir -p "$JEDI/tmp/qiime2"
+mkdir -p "$JEDI/tmp/singularity"
+mkdir -p "$JEDI/tmp/xdg_config"
+mkdir -p "$JEDI/tmp/mpl"
+mkdir -p "$JEDI/tmp/numba"
+
+chmod -R u+rwx "$JEDI/tmp"
+
 # ------------------------------- FONCTIONS -----------------------------------
 log() {
     printf '[%(%F %T)T] %s\n' -1 "$*"
@@ -141,6 +151,33 @@ mkdir -p "${NXF_HOME}" "${NXF_SINGULARITY_CACHEDIR}"
 command -v nextflow >/dev/null 2>&1 || die "Nextflow est introuvable dans le PATH."
 [[ -f "${INFO_XLSX}" ]] || die "Tableur absent : ${INFO_XLSX}"
 [[ -d "${RAW_DIR}" ]] || die "Dossier FASTQ absent : ${RAW_DIR}"
+
+# Espaces temporaires persistants et inscriptibles pour QIIME2/Singularity.
+export TMPDIR="/nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline/tmp"
+export TEMP="$TMPDIR"
+export TMP="$TMPDIR"
+
+export XDG_CONFIG_HOME="$TMPDIR/xdg_config"
+export MPLCONFIGDIR="$TMPDIR/mpl"
+export NUMBA_CACHE_DIR="$TMPDIR/numba"
+
+mkdir -p "$TMPDIR/qiime2" "$XDG_CONFIG_HOME" "$MPLCONFIGDIR" "$NUMBA_CACHE_DIR"
+
+cat > /nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline/singularity_timeout.config <<'EOF'
+singularity {
+    enabled = true
+    autoMounts = true
+    pullTimeout = '2h'
+    cacheDir = '/nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline/container_cache'
+    runOptions = '--bind /nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline/tmp:/nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline/tmp'
+}
+
+process {
+    withName: 'NFCORE_AMPLISEQ:AMPLISEQ:FORMATTAXONOMY' {
+        container = '/nvme/bio/data_fungi/valormicro_V2/03_JEDI_pipeline/container_cache/biocontainers-v1.2.0_cv1.sif'
+    }
+}
+EOF
 
 PROFILE="$(choose_profile)" || die "Aucun moteur disponible (Apptainer, Singularity, Docker ou Conda)."
 log "Dossier JEDI independant : ${JEDI_ROOT}"
