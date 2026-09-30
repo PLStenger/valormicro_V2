@@ -369,7 +369,7 @@ for sheet_name, sheet in rows:
 
     # Coller ici le bloc robuste de détection R1 / R2 / Newlabel.
 
-    def header_key(value):
+def header_key(value):
     value = str(value).replace("\xa0", " ")
     value = value.strip().lower()
     return re.sub(r"[^a-z0-9]", "", value)
