@@ -194,6 +194,27 @@ singularity {
 }
 
 apptainer {
+  enabled = false
+}
+
+docker.enabled = false
+podman.enabled = false
+charliecloud.enabled = false
+
+params {
+  validate_params = true
+}
+EOF
+}
+
+singularity {
+  enabled = true
+  autoMounts = true
+  cacheDir = '${SINGULARITY_IMAGE_CACHE}'
+  pullTimeout = '${PULL_TIMEOUT}'
+}
+
+apptainer {
   enabled = true
   autoMounts = true
   cacheDir = '${SINGULARITY_IMAGE_CACHE}'
