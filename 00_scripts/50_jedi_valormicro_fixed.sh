@@ -285,7 +285,11 @@ for fn in os.listdir(raw_dir):
 pairs=[]
 for key in sorted(set(fastq_r1) & set(fastq_r2)):
     sample=key
-    sample=re.sub(r'[^A-Za-z0-9_.-]+', '_', sample)
+    sample=re.sub(r'[^A-Za-z0-9_]+', '_', sample)
+    sample=re.sub(r'_+', '_', sample).strip('_')
+
+if not sample or not sample[0].isalpha():
+    sample = f"S_{sample}"
     pairs.append((sample, fastq_r1[key], fastq_r2[key]))
 
 if not pairs:
@@ -397,7 +401,7 @@ skip_dada_addspecies: true
 skip_abundance_tables: true
 skip_alpha_rarefaction: true
 skip_diversity_indices: true
-ancombc_formula: "1"
+ancombc_formula: "none"
 report_title: "JEDI valormicro - ASV et SILVA"
 save_intermediates: true
 trunclenf: ${TRUNC_LEN_F}
