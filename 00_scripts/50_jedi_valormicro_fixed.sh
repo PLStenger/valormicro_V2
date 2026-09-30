@@ -581,7 +581,7 @@ dada2_pooling_method: "independent"
 merge_pairs: true
 consensus_merge: true
 pseudo_pool: false
-sample_inference: false
+sample_inference: "independent"
 qiime_metadata_category: ""
 remove_taxids: ""
 allow_multiple_taxonomies: true
@@ -615,7 +615,7 @@ dada2_pooling_method: "independent"
 merge_pairs: true
 consensus_merge: true
 pseudo_pool: false
-sample_inference: false
+sample_inference: "independent"
 qiime_metadata_category: ""
 remove_taxids: ""
 allow_multiple_taxonomies: true
