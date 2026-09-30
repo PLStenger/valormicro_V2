@@ -348,23 +348,56 @@ for sheet_name, sheet in rows:
     if header is None:
         continue
 
-    try:
-        r1_col = header.index("r1")
-        r2_col = header.index("r2")
-    except ValueError:
+for sheet_name, sheet in rows:
+    if not sheet:
         continue
 
-    label_col = None
-    for candidate in ("newlabel", "sample", "sampleid", "sample id",
-                      "echantillon", "échantillon"):
-        if candidate in header:
-            label_col = header.index(candidate)
+    header = None
+    header_idx = None
+
+    for i, row in enumerate(sheet[:20]):
+        norm = [clean_header(c) for c in row]
+        norm_keys = [header_key(c) for c in row]
+
+        if "r1" in norm_keys and "r2" in norm_keys:
+            header = row
+            header_idx = i
             break
 
-    if label_col is None:
-        raise SystemExit(
-            f"Feuille '{sheet_name}' : aucune colonne Newlabel/sample détectée."
-        )
+    if header is None:
+        continue
+
+    # Coller ici le bloc robuste de détection R1 / R2 / Newlabel.
+
+    def header_key(value):
+    value = str(value).replace("\xa0", " ")
+    value = value.strip().lower()
+    return re.sub(r"[^a-z0-9]", "", value)
+
+header_keys = [header_key(x) for x in header]
+
+def find_col(accepted_names):
+    accepted = {header_key(x) for x in accepted_names}
+    for i, key in enumerate(header_keys):
+        if key in accepted:
+            return i
+    return None
+
+r1_col = find_col(("R1", "Read1", "Forward", "Forward read"))
+r2_col = find_col(("R2", "Read2", "Reverse", "Reverse read"))
+label_col = find_col((
+    "Newlabel", "New label", "New_label",
+    "Sample", "SampleID", "Sample ID",
+    "Echantillon", "Échantillon"
+))
+
+if r1_col is None or r2_col is None or label_col is None:
+    raise SystemExit(
+        f"Feuille '{sheet_name}' : colonnes introuvables.\n"
+        f"En-têtes bruts : {header}\n"
+        f"En-têtes normalisés : {header_keys}\n"
+        f"Indices détectés : R1={r1_col}, R2={r2_col}, label={label_col}"
+    )
 
     for row_number, row in enumerate(sheet[header_idx + 1:], start=header_idx + 2):
         if not any(str(x).strip() for x in row):
