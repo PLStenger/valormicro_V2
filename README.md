@@ -35,6 +35,7 @@ First, open your terminal. Then, run these two command lines :
 
     # JEDI pipeline
     time nohup bash 50_jedi_valormicro.sh &> 50_jedi_valormicro.out
+    time nohup bash 50_jedi_valormicro_fixed.sh &> 50_jedi_valormicro_fixed.out
 
     ## /!\ if Nextflow or Java problems with JEDI pipeline, please run before:
 
