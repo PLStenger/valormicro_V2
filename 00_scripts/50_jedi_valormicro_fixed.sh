@@ -209,11 +209,16 @@ shared = os.path.join(project_root, "03_JEDI_pipeline", "00_inputs", "sampleshee
 ns = {'a':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
 
 def col_to_idx(col):
-    n=0
+    n = 0
     for c in col:
         if c.isalpha():
-            n=n*26+(ord(c.upper())-64)
-    return n-1
+            n = n * 26 + (ord(c.upper()) - 64)
+    return n - 1
+
+def header_key(value):
+    value = str(value).replace("\xa0", " ")
+    value = value.strip().lower()
+    return re.sub(r"[^a-z0-9]", "", value)
 
 def read_xlsx(path):
     with zipfile.ZipFile(path) as z:
@@ -368,11 +373,6 @@ for sheet_name, sheet in rows:
         continue
 
     # Coller ici le bloc robuste de détection R1 / R2 / Newlabel.
-
-def header_key(value):
-    value = str(value).replace("\xa0", " ")
-    value = value.strip().lower()
-    return re.sub(r"[^a-z0-9]", "", value)
 
 header_keys = [header_key(x) for x in header]
 
