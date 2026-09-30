@@ -107,6 +107,28 @@ setup_environment() {
   mkdir -p "${NXF_HOME}" "${SINGULARITY_TMPDIR_LOCAL}" "${SINGULARITY_LAYER_CACHE}" "${SINGULARITY_IMAGE_CACHE}"
 }
 
+activate_nextflow_java() {
+  local conda_base=""
+
+  if command -v conda >/dev/null 2>&1; then
+    conda_base="$(conda info --base 2>/dev/null || true)"
+
+    if [[ -n "${conda_base}" && -f "${conda_base}/etc/profile.d/conda.sh" ]]; then
+      # shellcheck disable=SC1090
+      source "${conda_base}/etc/profile.d/conda.sh"
+      conda activate nextflow-java
+    fi
+  fi
+
+  export JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
+  export NXF_JAVA_HOME="${JAVA_HOME}"
+  unset JAVA_CMD
+  hash -r
+
+  java -version
+  nextflow -version
+}
+
 check_prerequisites() {
   require_cmd bash
   require_cmd awk
@@ -801,6 +823,7 @@ validate_final_outputs() {
 main() {
   acquire_lock
   setup_environment
+  activate_nextflow_java
   check_prerequisites
   write_nextflow_config
   preload_problematic_container
