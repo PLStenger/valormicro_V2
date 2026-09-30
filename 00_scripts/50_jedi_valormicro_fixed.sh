@@ -1,772 +1,819 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# Pipeline JEDI valormicro_V2 — version corrigée et relançable
-#
-# Objectif :
-#   FASTQ paired-end -> Cutadapt -> DADA2/JEDI consensus -> ASV
-#   -> SILVA 138.2 (Bacteria, Archaea, organites)
-#   -> PR2 5.0.0 (Eukaryota)
-#   -> intégration cross-domain, tables par domaine, alpha-diversité et
-#      raréfaction analytique.
-#
-# Cette version désactive les analyses aval QIIME2/Emperor dans nf-core : elles
-# ne sont pas nécessaires à l'inférence/classification et sont la cause exacte
-# de l'arrêt observé dans 50_jedi_valormicro-2.out. Les tables aval sont créées
-# ici de manière déterministe après les deux classifications.
-#
-# Relance : la commande est identique ; les résultats valides et le cache
-# Nextflow sont réutilisés. Pour forcer une étape :
-#   FORCE_SILVA=1 bash 50_jedi_valormicro_fixed.sh
-#   FORCE_PR2=1   bash 50_jedi_valormicro_fixed.sh
-#   FORCE_ALL=1   bash 50_jedi_valormicro_fixed.sh
-# ==============================================================================
-
 set -Eeuo pipefail
 shopt -s nullglob
-IFS=$'\n\t'
-umask 002
 
-# -------------------------------- CONFIGURATION ------------------------------
-PROJECT_DIR="${PROJECT_DIR:-/nvme/bio/data_fungi/valormicro_V2}"
-RAW_DIR="${RAW_DIR:-${PROJECT_DIR}/01_raw_data}"
-INFO_XLSX="${INFO_XLSX:-${RAW_DIR}/00_infos_data.xlsx}"
-JEDI_ROOT="${JEDI_ROOT:-${PROJECT_DIR}/03_JEDI_pipeline}"
+############################################
+# JEDI cross-domain pipeline for Valormicro
+# Fixed v2: robust Singularity cache + preloaded problematic image
+############################################
 
-INPUT_DIR="${JEDI_ROOT}/00_inputs"
-SILVA_OUT="${JEDI_ROOT}/01_nfcore_silva"
-PR2_OUT="${JEDI_ROOT}/02_nfcore_pr2"
-INTEGRATED_OUT="${JEDI_ROOT}/03_integrated"
-WORK_DIR="${JEDI_ROOT}/work"
-LOG_DIR="${JEDI_ROOT}/logs"
-DB_CACHE="${JEDI_ROOT}/reference_databases"
-CONTAINER_CACHE="${JEDI_ROOT}/container_cache"
-TMP_ROOT="${JEDI_ROOT}/tmp"
-LAUNCH_DIR="${CONTAINER_CACHE}"
-
-NFCORE_VERSION="${NFCORE_VERSION:-2.18.0}"
-SILVA_DB="${SILVA_DB:-silva=138.2}"
-PR2_DB="${PR2_DB:-pr2=5.0.0}"
-
-# Amorces JEDI 515F-Y / 926R (5' -> 3').
-FW_PRIMER="${FW_PRIMER:-GTGYCAGCMGCCGCGGTAA}"
-RV_PRIMER="${RV_PRIMER:-CCGYCAATTYMTTTRAGTTT}"
-
-# Valeurs utilisées dans le protocole JEDI sur des reads 2 x 250.
-# Mettre 0/0 pour ne pas tronquer, ou modifier via variables d'environnement.
-TRUNCLEN_F="${TRUNCLEN_F:-231}"
-TRUNCLEN_R="${TRUNCLEN_R:-230}"
-TRUNC_QMIN="${TRUNC_QMIN:-25}"
-TRUNC_RMIN="${TRUNC_RMIN:-0.75}"
-MAX_EE="${MAX_EE:-2}"
-MIN_LEN="${MIN_LEN:-50}"
-
-# Nombre de profondeurs de raréfaction analytique par échantillon.
-RAREFACTION_POINTS="${RAREFACTION_POINTS:-20}"
-
-EXCEL_ENV="${EXCEL_ENV:-excel_tools}"
-NXF_PROFILE="${NXF_PROFILE:-}"
+SCRIPT_VERSION="JEDI_VALORMICRO_FIXED_V2_2026-09-30"
+PROJECT_ROOT="/nvme/bio/data_fungi/valormicro_V2"
+RAW_DIR="${PROJECT_ROOT}/01_raw_data"
+JEDI_DIR="${PROJECT_ROOT}/03_JEDI_pipeline"
+INPUT_DIR="${JEDI_DIR}/00_inputs"
+SILVA_DIR="${JEDI_DIR}/01_nfcore_silva"
+PR2_DIR="${JEDI_DIR}/02_nfcore_pr2"
+INTEGRATED_DIR="${JEDI_DIR}/03_integrated"
+REF_DIR="${JEDI_DIR}/reference_databases"
+LOG_DIR="${JEDI_DIR}/logs"
+TMP_DIR="${JEDI_DIR}/tmp"
+CONTAINER_ROOT="${JEDI_DIR}/container_cache"
+SINGULARITY_TMPDIR_LOCAL="${CONTAINER_ROOT}/singularity_tmp"
+SINGULARITY_LAYER_CACHE="${CONTAINER_ROOT}/singularity_layers"
+SINGULARITY_IMAGE_CACHE="${CONTAINER_ROOT}/singularity_images"
+LOCK_DIR="${JEDI_DIR}/.jedi_pipeline.lock"
+SUCCESS_FLAG="${INTEGRATED_DIR}/PIPELINE_SUCCESS.txt"
+FAIL_FLAG="${INTEGRATED_DIR}/PIPELINE_FAILED.txt"
+RUN_MANIFEST="${INTEGRATED_DIR}/run_manifest.tsv"
+LOG_FILE="${LOG_DIR}/jedi_pipeline_fixed_v2.log"
+SAMPLESHEET="${INPUT_DIR}/samplesheet_jedi.tsv"
+SILVA_PARAMS="${INPUT_DIR}/params_silva_fixed_v2.yaml"
+PR2_PARAMS="${INPUT_DIR}/params_pr2_fixed_v2.yaml"
+NF_INFRA_CFG="${INPUT_DIR}/nextflow_infrastructure.config"
+NFCORE_VERSION="2.18.0"
+PROFILE="singularity"
+AMPLISEQ_REPO="nf-core/ampliseq"
+PYTHON_BIN="python3"
+FORWARD_PRIMER="GTGYCAGCMGCCGCGGTAA"
+REVERSE_PRIMER="CCGYCAATTYMTTTRAGTTT"
+TRUNC_LEN_F="231"
+TRUNC_LEN_R="230"
+SILVA_REF="silva=138.2"
+PR2_REF="pr2=5.0.0"
+PRELOAD_IMAGE_DOCKER="docker://biocontainers/biocontainers:v1.2.0_cv1"
+PRELOAD_IMAGE_SIF="${SINGULARITY_IMAGE_CACHE}/biocontainers_v1.2.0_cv1.sif"
+PRELOAD_IMAGE_ALIAS1="${SINGULARITY_IMAGE_CACHE}/containers.biocontainers.pro-s3-SingImgsRepo-biocontainers-v1.2.0_cv1-biocontainers_v1.2.0_cv1.img.img"
+PRELOAD_IMAGE_ALIAS2="${CONTAINER_ROOT}/containers.biocontainers.pro-s3-SingImgsRepo-biocontainers-v1.2.0_cv1-biocontainers_v1.2.0_cv1.img.img"
+PULL_TIMEOUT="12 h"
 FORCE_SILVA="${FORCE_SILVA:-0}"
 FORCE_PR2="${FORCE_PR2:-0}"
 FORCE_ALL="${FORCE_ALL:-0}"
+KEEP_FAILURE_MARKER="${KEEP_FAILURE_MARKER:-0}"
 
-# --------------------------------- FONCTIONS ---------------------------------
+mkdir -p "${INPUT_DIR}" "${SILVA_DIR}" "${PR2_DIR}" "${INTEGRATED_DIR}" "${REF_DIR}" "${LOG_DIR}" "${TMP_DIR}" \
+         "${CONTAINER_ROOT}" "${SINGULARITY_TMPDIR_LOCAL}" "${SINGULARITY_LAYER_CACHE}" "${SINGULARITY_IMAGE_CACHE}"
+
+touch "${LOG_FILE}"
+exec > >(tee -a "${LOG_FILE}") 2>&1
+
 log() {
-    printf '[%(%F %T)T] %s\n' -1 "$*"
+  printf '[%s] %s\n' "$(date '+%F %T')" "$*"
 }
 
 die() {
-    log "ERREUR : $*" >&2
-    exit 1
+  log "ERREUR : $*"
+  printf 'FAILED\t%s\t%s\n' "$(date '+%F %T')" "$*" > "${FAIL_FLAG}" || true
+  exit 1
 }
 
 on_error() {
-    local rc=$?
-    local line="${BASH_LINENO[0]:-inconnue}"
-    log "ERREUR : code ${rc}, ligne ${line}, commande : ${BASH_COMMAND}" >&2
-    exit "$rc"
+  local exit_code="$?"
+  local line_no="${1:-unknown}"
+  local cmd="${2:-unknown}"
+  log "ERREUR : code ${exit_code}, ligne ${line_no}, commande : ${cmd}"
+  printf 'FAILED\t%s\tline=%s\tcmd=%s\texit=%s\n' "$(date '+%F %T')" "${line_no}" "${cmd}" "${exit_code}" > "${FAIL_FLAG}" || true
+  exit "${exit_code}"
 }
-trap on_error ERR
+trap 'on_error ${LINENO} "${BASH_COMMAND}"' ERR
 
-choose_profile() {
-    if [[ -n "$NXF_PROFILE" ]]; then
-        printf '%s' "$NXF_PROFILE"
-    elif command -v apptainer >/dev/null 2>&1; then
-        printf '%s' apptainer
-    elif command -v singularity >/dev/null 2>&1; then
-        printf '%s' singularity
-    elif command -v docker >/dev/null 2>&1; then
-        printf '%s' docker
-    else
-        return 1
-    fi
-}
-
-is_uint() {
-    [[ "$1" =~ ^[0-9]+$ ]]
-}
-
-has_taxonomy() {
-    local root="$1"
-    local found
-    found="$(find "${root}/dada2" -maxdepth 1 -type f \
-        -name 'ASV_tax.*.tsv' ! -name '*species*' -size +0c \
-        -print -quit 2>/dev/null || true)"
-    [[ -n "$found" ]]
-}
-
-silva_core_complete() {
-    [[ -s "${SILVA_OUT}/dada2/ASV_seqs.fasta" ]] &&
-    [[ -s "${SILVA_OUT}/dada2/ASV_table.tsv" ]] &&
-    has_taxonomy "$SILVA_OUT"
-}
-
-pr2_core_complete() {
-    has_taxonomy "$PR2_OUT"
-}
-
-run_nextflow() {
-    local params_file="$1"
-    local work_subdir="$2"
-    local run_label="$3"
-
-    log "Lancement nf-core/ampliseq (${run_label})"
-    log "Paramètres : ${params_file}"
-    log "Work      : ${work_subdir}"
-
-    (
-        cd "$LAUNCH_DIR"
-        nextflow run nf-core/ampliseq \
-            -r "$NFCORE_VERSION" \
-            -profile "$PROFILE" \
-            -params-file "$params_file" \
-            -work-dir "$work_subdir" \
-            -c "${INPUT_DIR}/nextflow_infrastructure.config" \
-            -resume \
-            -ansi-log false
-    )
-}
-
-# ------------------------------- PRÉPARATION ---------------------------------
-mkdir -p "$INPUT_DIR" "$SILVA_OUT" "$PR2_OUT" "$INTEGRATED_OUT" \
-    "$WORK_DIR" "$LOG_DIR" "$DB_CACHE" "$CONTAINER_CACHE" \
-    "$TMP_ROOT/general" "$TMP_ROOT/nextflow" "$TMP_ROOT/xdg" \
-    "$TMP_ROOT/mpl" "$TMP_ROOT/numba"
-
-exec > >(tee -a "${LOG_DIR}/jedi_pipeline_fixed.log") 2>&1
-
-# Verrou simple contre deux lancements simultanés.
-LOCK_DIR="${JEDI_ROOT}/.jedi_fixed.lock"
-if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    die "Un autre lancement semble actif (${LOCK_DIR}). Supprimer ce dossier uniquement si aucun pipeline ne tourne."
-fi
 cleanup_lock() {
-    rmdir "$LOCK_DIR" 2>/dev/null || true
+  rm -rf "${LOCK_DIR}" || true
 }
 trap cleanup_lock EXIT
 
-export NXF_HOME="${JEDI_ROOT}/.nextflow"
-export NXF_OPTS="${NXF_OPTS:--Xms1g -Xmx4g}"
-export NXF_SINGULARITY_CACHEDIR="$CONTAINER_CACHE"
-export NXF_APPTAINER_CACHEDIR="$CONTAINER_CACHE"
-export APPTAINER_CACHEDIR="$CONTAINER_CACHE"
-export SINGULARITY_CACHEDIR="$CONTAINER_CACHE"
-export NXF_SINGULARITY_PULL_TIMEOUT="2h"
-export TMPDIR="${TMP_ROOT}/general"
-export TEMP="$TMPDIR"
-export TMP="$TMPDIR"
-export XDG_CONFIG_HOME="${TMP_ROOT}/xdg"
-export MPLCONFIGDIR="${TMP_ROOT}/mpl"
-export NUMBA_CACHE_DIR="${TMP_ROOT}/numba"
-
-command -v nextflow >/dev/null 2>&1 || die "Nextflow est absent du PATH."
-[[ -d "$RAW_DIR" ]] || die "Dossier FASTQ absent : ${RAW_DIR}"
-[[ -s "$INFO_XLSX" ]] || die "Tableur absent ou vide : ${INFO_XLSX}"
-
-PROFILE="$(choose_profile)" || die "Apptainer, Singularity ou Docker est requis."
-
-for value in "$TRUNCLEN_F" "$TRUNCLEN_R" "$TRUNC_QMIN" "$MAX_EE" "$MIN_LEN" "$RAREFACTION_POINTS"; do
-    is_uint "$value" || die "Paramètre entier invalide : ${value}"
-done
-[[ "$RAREFACTION_POINTS" -ge 2 ]] || die "RAREFACTION_POINTS doit être >= 2."
-
-cat > "${INPUT_DIR}/nextflow_infrastructure.config" <<EOF
-singularity {
-    autoMounts = true
-    cacheDir = '${CONTAINER_CACHE}'
-    pullTimeout = '2h'
+acquire_lock() {
+  if mkdir "${LOCK_DIR}" 2>/dev/null; then
+    printf '%s\n' "$${PPID}" > "${LOCK_DIR}/pid"
+  else
+    die "Un autre run JEDI semble déjà actif : ${LOCK_DIR}"
+  fi
 }
-apptainer {
-    autoMounts = true
-    cacheDir = '${CONTAINER_CACHE}'
-    pullTimeout = '2h'
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "Commande introuvable : $1"
 }
+
+setup_environment() {
+  export NXF_SINGULARITY_CACHEDIR="${SINGULARITY_IMAGE_CACHE}"
+  export NXF_APPTAINER_CACHEDIR="${SINGULARITY_IMAGE_CACHE}"
+  export SINGULARITY_CACHEDIR="${SINGULARITY_LAYER_CACHE}"
+  export APPTAINER_CACHEDIR="${SINGULARITY_LAYER_CACHE}"
+  export SINGULARITY_TMPDIR="${SINGULARITY_TMPDIR_LOCAL}"
+  export APPTAINER_TMPDIR="${SINGULARITY_TMPDIR_LOCAL}"
+  export TMPDIR="${SINGULARITY_TMPDIR_LOCAL}"
+  export NXF_HOME="${JEDI_DIR}/.nextflow"
+  export NXF_OFFLINE='false'
+  mkdir -p "${NXF_HOME}" "${SINGULARITY_TMPDIR_LOCAL}" "${SINGULARITY_LAYER_CACHE}" "${SINGULARITY_IMAGE_CACHE}"
+}
+
+check_prerequisites() {
+  require_cmd bash
+  require_cmd awk
+  require_cmd sed
+  require_cmd grep
+  require_cmd gzip
+  require_cmd find
+  require_cmd singularity
+  require_cmd nextflow
+  require_cmd "${PYTHON_BIN}"
+  require_cmd java
+  [[ -d "${RAW_DIR}" ]] || die "Répertoire FASTQ absent : ${RAW_DIR}"
+  [[ -f "${PROJECT_ROOT}/01_raw_data/00_infos_data.xlsx" ]] || die "Fichier metadata absent : ${PROJECT_ROOT}/01_raw_data/00_infos_data.xlsx"
+}
+
+write_nextflow_config() {
+  cat > "${NF_INFRA_CFG}" <<EOF_CFG
 process {
-    errorStrategy = { task.exitStatus in [137, 140, 143] ? 'retry' : 'terminate' }
-    maxRetries = 2
+  executor = 'local'
+  scratch = false
 }
-EOF
 
-log "Pipeline JEDI corrigé"
-log "Racine       : ${JEDI_ROOT}"
-log "nf-core      : ampliseq ${NFCORE_VERSION}"
-log "Profil       : ${PROFILE}"
-log "Classifieurs : ${SILVA_DB} + ${PR2_DB}"
-log "Amorces      : ${FW_PRIMER} / ${RV_PRIMER}"
-nextflow -version
+singularity {
+  enabled = true
+  autoMounts = true
+  cacheDir = '${SINGULARITY_IMAGE_CACHE}'
+  pullTimeout = '${PULL_TIMEOUT}'
+}
 
-# -------------------------- CHOIX DU PYTHON EXCEL ----------------------------
-PYTHON_CMD=()
-if command -v python3 >/dev/null 2>&1 && python3 -c 'import pandas, openpyxl' >/dev/null 2>&1; then
-    PYTHON_CMD=(python3)
-elif command -v python >/dev/null 2>&1 && python -c 'import pandas, openpyxl' >/dev/null 2>&1; then
-    PYTHON_CMD=(python)
-elif command -v conda >/dev/null 2>&1 && conda run -n "$EXCEL_ENV" python -c 'import pandas, openpyxl' >/dev/null 2>&1; then
-    PYTHON_CMD=(conda run --no-capture-output -n "$EXCEL_ENV" python)
-else
-    die "Aucun Python avec pandas+openpyxl. Installer ces modules ou vérifier l'environnement Conda ${EXCEL_ENV}."
-fi
+apptainer {
+  enabled = false
+}
 
-SAMPLESHEET="${INPUT_DIR}/samplesheet_jedi.tsv"
-METADATA="${INPUT_DIR}/metadata_jedi.tsv"
-ID_MAP="${INPUT_DIR}/sample_id_mapping.tsv"
-CONTROL_FLAG="${INPUT_DIR}/controls_detected.flag"
-rm -f "$CONTROL_FLAG"
+docker {
+  enabled = false
+}
 
-log "Construction et validation du samplesheet depuis ${INFO_XLSX}"
-"${PYTHON_CMD[@]}" - "$INFO_XLSX" "$RAW_DIR" "$SAMPLESHEET" "$METADATA" "$ID_MAP" "$CONTROL_FLAG" <<'PY'
-import re
-import sys
-import unicodedata
-from pathlib import Path
-import pandas as pd
+cleanup = false
+report {
+  enabled = false
+}
+timeline {
+  enabled = false
+}
+trace {
+  enabled = true
+}
+dag {
+  enabled = false
+}
+EOF_CFG
+}
 
-xlsx, raw_dir, samplesheet, metadata, id_map, control_flag = sys.argv[1:]
-raw_dir = Path(raw_dir).resolve()
-df = pd.read_excel(xlsx, dtype=str).fillna("")
-df.columns = [str(c).strip() for c in df.columns]
+preload_problematic_container() {
+  log "Préchargement sécurisé du conteneur BioContainers problématique"
+  rm -f "${PRELOAD_IMAGE_ALIAS1}.pulling."* "${PRELOAD_IMAGE_ALIAS2}.pulling."* 2>/dev/null || true
+  if [[ ! -s "${PRELOAD_IMAGE_SIF}" ]]; then
+    log "Téléchargement local du conteneur depuis ${PRELOAD_IMAGE_DOCKER}"
+    singularity pull "${PRELOAD_IMAGE_SIF}" "${PRELOAD_IMAGE_DOCKER}"
+  else
+    log "Conteneur déjà présent : ${PRELOAD_IMAGE_SIF}"
+  fi
+  singularity exec "${PRELOAD_IMAGE_SIF}" python --version >/dev/null
+  ln -sfn "${PRELOAD_IMAGE_SIF}" "${PRELOAD_IMAGE_ALIAS1}"
+  ln -sfn "${PRELOAD_IMAGE_SIF}" "${PRELOAD_IMAGE_ALIAS2}"
+  log "Alias Nextflow créés vers ${PRELOAD_IMAGE_SIF}"
+}
 
-required = ["R1", "R2", "New_label"]
-missing = [c for c in required if c not in df.columns]
-if missing:
-    raise SystemExit("Colonnes obligatoires absentes : " + ", ".join(missing))
-for c in df.columns:
-    df[c] = df[c].astype(str).str.strip()
+build_samplesheet() {
+  log "Construction et validation du samplesheet depuis ${PROJECT_ROOT}/01_raw_data/00_infos_data.xlsx"
+  "${PYTHON_BIN}" <<'PY'
+import os, re, sys, json, csv, zipfile, xml.etree.ElementTree as ET
+project_root = "/nvme/bio/data_fungi/valormicro_V2"
+raw_dir = os.path.join(project_root, "01_raw_data")
+outfile = os.path.join(project_root, "03_JEDI_pipeline", "00_inputs", "samplesheet_jedi.tsv")
+xlsx = os.path.join(raw_dir, "00_infos_data.xlsx")
+shared = os.path.join(project_root, "03_JEDI_pipeline", "00_inputs", "samplesheet_jedi_debug.tsv")
+ns = {'a':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
 
-used = (df["R1"] != "") | (df["R2"] != "") | (df["New_label"] != "")
-partial = df.loc[used & ((df["R1"] == "") | (df["R2"] == "") | (df["New_label"] == "")), required]
-if not partial.empty:
-    raise SystemExit("Lignes incomplètes R1/R2/New_label :\n" + partial.to_string(index=False))
-df = df.loc[(df["R1"] != "") & (df["R2"] != "") & (df["New_label"] != "")].copy()
-if df.empty:
-    raise SystemExit("Aucun échantillon complet dans le tableur.")
+def col_to_idx(col):
+    n=0
+    for c in col:
+        if c.isalpha():
+            n=n*26+(ord(c.upper())-64)
+    return n-1
 
-def ascii_text(value):
-    return unicodedata.normalize("NFKD", str(value)).encode("ascii", "ignore").decode()
+def read_xlsx(path):
+    with zipfile.ZipFile(path) as z:
+        strings=[]
+        if 'xl/sharedStrings.xml' in z.namelist():
+            root=ET.fromstring(z.read('xl/sharedStrings.xml'))
+            for si in root.findall('a:si', ns):
+                texts=[]
+                for t in si.iterfind('.//a:t', ns):
+                    texts.append(t.text or '')
+                strings.append(''.join(texts))
+        wb=ET.fromstring(z.read('xl/workbook.xml'))
+        rel_root=ET.fromstring(z.read('xl/_rels/workbook.xml.rels'))
+        rels={r.attrib['Id']:r.attrib['Target'] for r in rel_root}
+        sheets=[]
+        for s in wb.find('a:sheets', ns):
+            rid=s.attrib.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
+            target=rels[rid]
+            if not target.startswith('xl/'):
+                target='xl/'+target
+            sheets.append((s.attrib['name'], target))
+        all_rows=[]
+        for name,target in sheets:
+            root=ET.fromstring(z.read(target))
+            data=[]
+            sheetData=root.find('a:sheetData', ns)
+            if sheetData is None:
+                continue
+            for row in sheetData.findall('a:row', ns):
+                vals={}
+                for c in row.findall('a:c', ns):
+                    ref=c.attrib.get('r','A1')
+                    col=''.join([x for x in ref if x.isalpha()])
+                    idx=col_to_idx(col)
+                    t=c.attrib.get('t')
+                    v=c.find('a:v', ns)
+                    val=''
+                    if v is not None and v.text is not None:
+                        val=v.text
+                        if t=='s':
+                            val=strings[int(val)]
+                    else:
+                        isel=c.find('a:is', ns)
+                        if isel is not None:
+                            txt=[x.text or '' for x in isel.iterfind('.//a:t', ns)]
+                            val=''.join(txt)
+                    vals[idx]=val
+                if vals:
+                    maxidx=max(vals)
+                    rowvals=['']*(maxidx+1)
+                    for i,v in vals.items():
+                        rowvals[i]=str(v).strip()
+                    data.append(rowvals)
+            all_rows.append((name,data))
+        return all_rows
 
-def make_sample_id(value):
-    value = re.sub(r"[^A-Za-z0-9_]+", "_", ascii_text(value).strip())
-    value = re.sub(r"_+", "_", value).strip("_")
-    if not value:
-        raise SystemExit("Un New_label ne produit aucun identifiant valide.")
-    if not value[0].isalpha():
-        value = "S_" + value
-    return value[:36]
+fastq_r1 = {}
+fastq_r2 = {}
+for fn in os.listdir(raw_dir):
+    if fn.endswith('.fastq.gz') or fn.endswith('.fq.gz'):
+        full=os.path.join(raw_dir, fn)
+        m1=re.match(r'(.+?)(_R?1(?:_001)?)(\.f(?:ast)?q\.gz)$', fn)
+        m2=re.match(r'(.+?)(_R?2(?:_001)?)(\.f(?:ast)?q\.gz)$', fn)
+        if m1:
+            fastq_r1[m1.group(1)] = full
+        elif m2:
+            fastq_r2[m2.group(1)] = full
 
-df["sample"] = [make_sample_id(x) for x in df["New_label"]]
-if df["sample"].duplicated().any():
-    dup = df.loc[df["sample"].duplicated(keep=False), ["New_label", "sample"]]
-    raise SystemExit("Identifiants dupliqués après normalisation :\n" + dup.to_string(index=False))
+pairs=[]
+for key in sorted(set(fastq_r1) & set(fastq_r2)):
+    sample=key
+    sample=re.sub(r'[^A-Za-z0-9_.-]+', '_', sample)
+    pairs.append((sample, fastq_r1[key], fastq_r2[key]))
 
-def fastq_path(value):
-    p = Path(value)
-    if not p.is_absolute():
-        p = raw_dir / p
-    p = p.resolve()
-    if not p.is_file() or p.stat().st_size == 0:
-        raise SystemExit(f"FASTQ absent ou vide : {p}")
-    if not (str(p).endswith(".fastq.gz") or str(p).endswith(".fq.gz")):
-        raise SystemExit(f"FASTQ non compressé ou extension invalide : {p}")
-    return str(p)
+if not pairs:
+    raise SystemExit('Aucune paire R1/R2 détectée dans 01_raw_data')
 
-out = pd.DataFrame({
-    "sample": df["sample"],
-    "fastq_1": [fastq_path(x) for x in df["R1"]],
-    "fastq_2": [fastq_path(x) for x in df["R2"]],
-})
+rows = read_xlsx(xlsx)
+negative_tokens = {'blank','neg','negative','ntc','control','controle','ctrl'}
+metadata = {}
+for _, sheet in rows:
+    if not sheet:
+        continue
+    header=None
+    for row in sheet[:10]:
+        norm=[re.sub(r'\s+',' ',c.strip().lower()) for c in row]
+        if any('sample' in x or 'echant' in x or 'échant' in x for x in norm):
+            header=norm
+            break
+    if header is None:
+        continue
+    header_idx=sheet.index(row)
+    for r in sheet[header_idx+1:]:
+        if not any(str(x).strip() for x in r):
+            continue
+        rec={header[i]: r[i].strip() if i < len(r) else '' for i in range(len(header))}
+        vals=' '.join(rec.values()).lower()
+        sid=None
+        for k,v in rec.items():
+            if 'sample' in k or 'echant' in k or 'échant' in k:
+                sid=v.strip()
+                break
+        if sid:
+            sid_clean=re.sub(r'[^A-Za-z0-9_.-]+', '_', sid)
+            metadata[sid_clean]={'negative':'yes' if any(tok in vals for tok in negative_tokens) else 'no'}
 
-def normalized_name(value):
-    return re.sub(r"[^a-z0-9]+", "", ascii_text(value).lower())
-
-by_norm = {normalized_name(c): c for c in df.columns}
-run_col = next((by_norm[x] for x in ("run", "sequencingrun", "runid") if x in by_norm), None)
-control_col = next((by_norm[x] for x in ("control", "controle", "negativecontrol") if x in by_norm), None)
-quant_col = next((by_norm[x] for x in ("quantreading", "dnaquantity", "dnaconcentration") if x in by_norm), None)
-
-if run_col and (df[run_col] != "").any():
-    out["run"] = df[run_col].replace("", "run1")
-
-if control_col:
-    def parse_control(value):
-        x = ascii_text(value).strip().lower()
-        controls = {"control", "controle", "negative", "negatif", "blank", "blanc", "ntc"}
-        samples = {"", "sample", "echantillon", "positive", "positif"}
-        if x in controls or "negative control" in x or "controle negatif" in x:
-            return "control"
-        if x in samples:
-            return "sample"
-        raise SystemExit(f"Valeur de contrôle non interprétable : {value!r}")
-    out["control"] = [parse_control(x) for x in df[control_col]]
-    if (out["control"] == "control").any():
-        Path(control_flag).write_text("controls present\n")
-
-if quant_col and (df[quant_col] != "").all():
-    q = pd.to_numeric(df[quant_col].str.replace(",", ".", regex=False), errors="coerce")
-    if q.notna().all():
-        out["quant_reading"] = q
-
-out.to_csv(samplesheet, sep="\t", index=False, lineterminator="\n")
-pd.DataFrame({"New_label_original": df["New_label"], "sample": df["sample"]}).to_csv(
-    id_map, sep="\t", index=False, lineterminator="\n"
-)
-
-meta = df.drop(columns=["R1", "R2", "New_label", "sample"], errors="ignore").copy()
-seen = {}
-new_columns = []
-for col in meta.columns:
-    base = re.sub(r"[^A-Za-z0-9_]+", "_", ascii_text(col)).strip("_") or "metadata"
-    seen[base] = seen.get(base, 0) + 1
-    new_columns.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
-meta.columns = new_columns
-meta.insert(0, "ID", df["sample"].values)
-meta.to_csv(metadata, sep="\t", index=False, lineterminator="\n")
-print(f"{len(out)} échantillons écrits dans {samplesheet}")
+with open(outfile, 'w', newline='') as oh, open(shared,'w',newline='') as dbg:
+    w=csv.writer(oh, delimiter='\t')
+    d=csv.writer(dbg, delimiter='\t')
+    w.writerow(['sample','fastq_1','fastq_2'])
+    d.writerow(['sample','fastq_1','fastq_2','negative'])
+    for sample,r1,r2 in pairs:
+        w.writerow([sample,r1,r2])
+        d.writerow([sample,r1,r2,metadata.get(sample,{}).get('negative','no')])
+print(len(pairs))
 PY
+  local n
+  n=$(awk 'END{print NR-1}' "${SAMPLESHEET}")
+  [[ "${n}" -gt 0 ]] || die "Samplesheet vide"
+  log "${n} échantillons écrits dans ${SAMPLESHEET}"
+}
 
-[[ -s "$SAMPLESHEET" ]] || die "Le samplesheet n'a pas été produit."
-[[ -s "$METADATA" ]] || die "Le fichier de métadonnées n'a pas été produit."
+check_fastq_integrity() {
+  log "Contrôle gzip de tous les FASTQ"
+  local count=0
+  while IFS=$'\t' read -r sample r1 r2; do
+    [[ "${sample}" == "sample" ]] && continue
+    gzip -t "${r1}"
+    gzip -t "${r2}"
+    count=$((count+1))
+  done < "${SAMPLESHEET}"
+  log "${count} paires FASTQ validées"
+}
 
-log "Contrôle gzip de tous les FASTQ"
-while IFS=$'\t' read -r sample fastq_1 fastq_2 rest; do
-    [[ "$sample" == "sample" ]] && continue
-    gzip -t "$fastq_1"
-    gzip -t "$fastq_2"
-done < "$SAMPLESHEET"
-
-cp -f "$0" "${INPUT_DIR}/pipeline_jedi_fixed_executed.sh" 2>/dev/null || true
-
-# ----------------------------- PARAMÈTRES SILVA ------------------------------
-SILVA_PARAMS="${INPUT_DIR}/params_silva_fixed.yaml"
-cat > "$SILVA_PARAMS" <<YAML
+write_silva_params() {
+  cat > "${SILVA_PARAMS}" <<EOF_SILVA
 input: "${SAMPLESHEET}"
-outdir: "${SILVA_OUT}"
-FW_primer: "${FW_PRIMER}"
-RV_primer: "${RV_PRIMER}"
-ref_taxonomy_storage: "${DB_CACHE}"
-save_intermediates: true
-
+outdir: "${SILVA_DIR}"
+FW_primer: "${FORWARD_PRIMER}"
+RV_primer: "${REVERSE_PRIMER}"
+trim_left_f: 0
+trim_left_r: 0
+trunc_len_f: ${TRUNC_LEN_F}
+trunc_len_r: ${TRUNC_LEN_R}
+max_ee_f: 2
+max_ee_r: 2
+trunc_q: 2
+skip_fastqc: false
+with_cutadapt: true
+cutadapt_min_overlap: 5
+cutadapt_error_rate: 0.1
+denoise: "dada2"
+single_end: false
+multiple_sequencing_runs: false
+pool_dada2: false
 mergepairs_strategy: "consensus"
-mergepairs_consensus_match: 1
-mergepairs_consensus_mismatch: -2
-mergepairs_consensus_gap: -4
-mergepairs_consensus_minoverlap: 12
-mergepairs_consensus_maxmismatch: 0
-mergepairs_consensus_percentile_cutoff: 0.001
-
-trunclenf: ${TRUNCLEN_F}
-trunclenr: ${TRUNCLEN_R}
-trunc_qmin: ${TRUNC_QMIN}
-trunc_rmin: ${TRUNC_RMIN}
-max_ee: ${MAX_EE}
-min_len: ${MIN_LEN}
-sample_inference: "independent"
-
-dada_ref_taxonomy: "${SILVA_DB}"
+dada_ref_taxonomy: "${SILVA_REF}"
 cut_dada_ref_taxonomy: true
-skip_dada_addspecies: true
 exclude_taxa: "none"
-min_frequency: 1
-min_samples: 1
-
-# Correctif essentiel : aucune étape QIIME2/Emperor n'est lancée.
+skip_barrnap: false
 skip_qiime: true
 skip_qiime_downstream: true
-skip_alpha_rarefaction: true
-skip_diversity_indices: true
-skip_abundance_tables: true
-report_title: "JEDI valormicro - ASV et SILVA"
-YAML
-
-# --------------------------- INFÉRENCE + SILVA -------------------------------
-if [[ "$FORCE_ALL" == "1" || "$FORCE_SILVA" == "1" ]] || ! silva_core_complete; then
-    log "ÉTAPE 1/3 : DADA2/JEDI et classification SILVA"
-    run_nextflow "$SILVA_PARAMS" "${WORK_DIR}/silva" SILVA
-else
-    log "ÉTAPE 1/3 : résultats SILVA centraux déjà complets ; réutilisation."
-fi
-
-ASV_FASTA="${SILVA_OUT}/dada2/ASV_seqs.fasta"
-ASV_TABLE="${SILVA_OUT}/dada2/ASV_table.tsv"
-[[ -s "$ASV_FASTA" ]] || die "ASV FASTA absent : ${ASV_FASTA}"
-[[ -s "$ASV_TABLE" ]] || die "Table ASV absente : ${ASV_TABLE}"
-has_taxonomy "$SILVA_OUT" || die "Taxonomie SILVA absente dans ${SILVA_OUT}/dada2"
-
-# ------------------------------- TAXONOMIE PR2 -------------------------------
-PR2_PARAMS="${INPUT_DIR}/params_pr2_fixed.yaml"
-cat > "$PR2_PARAMS" <<YAML
-input_fasta: "${ASV_FASTA}"
-outdir: "${PR2_OUT}"
-FW_primer: "${FW_PRIMER}"
-RV_primer: "${RV_PRIMER}"
-ref_taxonomy_storage: "${DB_CACHE}"
-save_intermediates: true
-
-dada_ref_taxonomy: "${PR2_DB}"
-cut_dada_ref_taxonomy: true
 skip_dada_addspecies: true
-
-skip_fastqc: true
-skip_barrnap: true
-skip_qiime: true
-skip_qiime_downstream: true
+skip_abundance_tables: true
 skip_alpha_rarefaction: true
 skip_diversity_indices: true
+ancombc_formula: "1"
+report_title: "JEDI valormicro - ASV et SILVA"
+save_intermediates: true
+trunclenf: ${TRUNC_LEN_F}
+trunclenr: ${TRUNC_LEN_R}
+EOF_SILVA
+}
+
+write_pr2_params() {
+  local asv_fasta="${SILVA_DIR}/dada2/ASV_seqs.fasta"
+  [[ -s "${asv_fasta}" ]] || die "ASV fasta absent pour PR2 : ${asv_fasta}"
+  cat > "${PR2_PARAMS}" <<EOF_PR2
+input: "${asv_fasta}"
+outdir: "${PR2_DIR}"
+denoise: false
+single_end: true
+dada_ref_taxonomy: "${PR2_REF}"
+cut_dada_ref_taxonomy: false
+skip_barrnap: true
+skip_fastqc: true
+skip_qiime: true
+skip_qiime_downstream: true
+skip_dada_addspecies: true
 skip_abundance_tables: true
-report_title: "JEDI valormicro - classification PR2"
-YAML
+skip_alpha_rarefaction: true
+skip_diversity_indices: true
+save_intermediates: true
+report_title: "JEDI valormicro - PR2 sur ASV pré-calculés"
+EOF_PR2
+}
 
-if [[ "$FORCE_ALL" == "1" || "$FORCE_PR2" == "1" ]] || ! pr2_core_complete; then
-    log "ÉTAPE 2/3 : classification des mêmes ASV avec PR2"
-    run_nextflow "$PR2_PARAMS" "${WORK_DIR}/pr2" PR2
-else
-    log "ÉTAPE 2/3 : taxonomie PR2 déjà complète ; réutilisation."
-fi
-has_taxonomy "$PR2_OUT" || die "Taxonomie PR2 absente dans ${PR2_OUT}/dada2"
+run_nfcore() {
+  local params_file="$1"
+  local work_subdir="$2"
+  local label="$3"
+  log "Lancement ${AMPLISEQ_REPO} ${label}"
+  log "Paramètres : ${params_file}"
+  log "Work : ${work_subdir}"
+  ( cd "${JEDI_DIR}"; nextflow run "${AMPLISEQ_REPO}" -r "${NFCORE_VERSION}" -profile "${PROFILE}" -params-file "${params_file}" -work-dir "${work_subdir}" -c "${NF_INFRA_CFG}" -resume -ansi-log false )
+}
 
-# -------------------------- INTÉGRATION CROSS-DOMAIN -------------------------
-log "ÉTAPE 3/3 : intégration SILVA/PR2 et analyses tabulaires"
-"${PYTHON_CMD[@]}" - "$SILVA_OUT" "$PR2_OUT" "$ASV_TABLE" "$ASV_FASTA" \
-    "$INTEGRATED_OUT" "$RAREFACTION_POINTS" <<'PY'
-import csv
-import math
-import shutil
-import sys
-from collections import defaultdict
-from pathlib import Path
+has_silva_success() {
+  [[ -s "${SILVA_DIR}/dada2/ASV_seqs.fasta" ]] && [[ -s "${SILVA_DIR}/dada2/table.tsv" ]]
+}
 
-silva_root, pr2_root, table_path, fasta_path, outdir, npoints = sys.argv[1:]
-silva_root = Path(silva_root)
-pr2_root = Path(pr2_root)
-table_path = Path(table_path)
-fasta_path = Path(fasta_path)
-outdir = Path(outdir)
-npoints = int(npoints)
-outdir.mkdir(parents=True, exist_ok=True)
-(outdir / "tables_by_domain").mkdir(exist_ok=True)
+has_pr2_success() {
+  [[ -d "${PR2_DIR}" ]] && find "${PR2_DIR}" -type f | grep -q .
+}
 
-def taxonomy_file(root, wanted):
-    candidates = []
-    for p in (root / "dada2").glob("ASV_tax.*.tsv"):
-        low = p.name.lower()
-        if p.is_file() and p.stat().st_size and "species" not in low and "into-qiime" not in low:
-            candidates.append(p)
-    if not candidates:
-        raise SystemExit(f"Aucune taxonomie dans {root / 'dada2'}")
-    candidates.sort(key=lambda p: (wanted.lower() not in p.name.lower(), len(p.name), p.name))
-    return candidates[0]
+locate_taxonomy_file() {
+  local root="$1"
+  find "${root}" -type f \( -iname '*taxonomy*.tsv' -o -iname '*tax*.tsv' -o -iname '*classification*.tsv' \) | head -n 1
+}
 
-def read_taxonomy(path):
-    with path.open(encoding="utf-8-sig", newline="") as handle:
-        reader = csv.DictReader(handle, delimiter="\t")
-        if not reader.fieldnames:
-            raise SystemExit(f"Taxonomie sans en-tête : {path}")
-        id_candidates = {"asv_id", "feature id", "featureid", "id", "#otu id"}
-        id_col = next((c for c in reader.fieldnames if c.strip().lower() in id_candidates), reader.fieldnames[0])
-        ignored = {"sequence", "confidence", "database"}
-        rank_cols = [c for c in reader.fieldnames if c != id_col and c.strip().lower() not in ignored]
-        data = {}
-        for row in reader:
-            asv = (row.get(id_col) or "").strip()
-            if asv:
-                data[asv] = [(row.get(c) or "").strip() for c in rank_cols]
+integrate_outputs() {
+  log "Intégration SILVA + PR2"
+  local silva_table="${SILVA_DIR}/dada2/table.tsv"
+  local silva_asv="${SILVA_DIR}/dada2/ASV_seqs.fasta"
+  [[ -s "${silva_table}" ]] || die "Table DADA2 absente : ${silva_table}"
+  [[ -s "${silva_asv}" ]] || die "FASTA ASV absente : ${silva_asv}"
+  local silva_tax
+  silva_tax="$(locate_taxonomy_file "${SILVA_DIR}")"
+  [[ -n "${silva_tax}" ]] || die "Fichier taxonomie SILVA introuvable"
+  local pr2_tax
+  pr2_tax="$(locate_taxonomy_file "${PR2_DIR}")"
+  [[ -n "${pr2_tax}" ]] || die "Fichier taxonomie PR2 introuvable"
+
+  mkdir -p "${INTEGRATED_DIR}/tables_by_domain"
+
+  SILVA_TABLE="${silva_table}" SILVA_ASV="${silva_asv}" SILVA_TAX="${silva_tax}" PR2_TAX="${pr2_tax}" INTEGRATED_DIR="${INTEGRATED_DIR}" "${PYTHON_BIN}" <<'PY'
+import os, re, math, csv
+from collections import defaultdict, OrderedDict
+
+integrated_dir = os.environ['INTEGRATED_DIR']
+silva_table = os.environ['SILVA_TABLE']
+silva_asv = os.environ['SILVA_ASV']
+silva_tax = os.environ['SILVA_TAX']
+pr2_tax = os.environ['PR2_TAX']
+
+os.makedirs(integrated_dir, exist_ok=True)
+os.makedirs(os.path.join(integrated_dir, 'tables_by_domain'), exist_ok=True)
+
+
+def parse_fasta(path):
+    seqs={}
+    cur=None
+    buf=[]
+    with open(path) as fh:
+        for line in fh:
+            line=line.rstrip('\n')
+            if not line: continue
+            if line.startswith('>'):
+                if cur is not None:
+                    seqs[cur]=''.join(buf)
+                cur=line[1:].split()[0]
+                buf=[]
+            else:
+                buf.append(line)
+        if cur is not None:
+            seqs[cur]=''.join(buf)
+    return seqs
+
+
+def sniff_delim(header_line):
+    return '\t' if header_line.count('\t') >= header_line.count(',') else ','
+
+
+def normalize_rank_name(x):
+    x=(x or '').strip().lower()
+    x=x.replace('taxon','taxonomy').replace('kingdom','domain')
+    return x
+
+
+def parse_tax_table(path):
+    with open(path) as fh:
+        first=fh.readline()
+        if not first:
+            return {}
+        delim=sniff_delim(first)
+    data={}
+    with open(path) as fh:
+        reader=csv.reader(fh, delimiter=delim)
+        rows=list(reader)
+    if not rows:
+        return data
+    header=[normalize_rank_name(x) for x in rows[0]]
+    idx_asv=None
+    for i,h in enumerate(header):
+        if h in ('featureid','feature id','asv','asv_id','sequence','otu','#otuid','id'):
+            idx_asv=i
+            break
+    if idx_asv is None:
+        idx_asv=0
+    rank_names=['domain','phylum','class','order','family','genus','species']
+    rank_idx={}
+    for r in rank_names:
+        for i,h in enumerate(header):
+            if h==r or h.endswith('_'+r) or h.startswith(r+'_'):
+                rank_idx[r]=i
+                break
+    tax_idx=None
+    for i,h in enumerate(header):
+        if 'taxonomy' in h or h in ('tax','taxon'):
+            tax_idx=i
+            break
+    for row in rows[1:]:
+        if not row or idx_asv >= len(row):
+            continue
+        asv=row[idx_asv].strip()
+        if not asv:
+            continue
+        ranks={r:'' for r in rank_names}
+        if rank_idx:
+            for r,i in rank_idx.items():
+                if i < len(row):
+                    ranks[r]=row[i].strip()
+        elif tax_idx is not None and tax_idx < len(row):
+            tax=row[tax_idx].strip()
+            parts=re.split(r'[;,]\s*', tax)
+            cleaned=[]
+            for p in parts:
+                p=re.sub(r'^[dkpcofgs]__','',p)
+                cleaned.append(p)
+            for i,r in enumerate(rank_names):
+                if i < len(cleaned):
+                    ranks[r]=cleaned[i]
+        data[asv]=ranks
     return data
 
-def read_fasta(path):
-    seqs, current = {}, None
-    with path.open() as handle:
-        for raw in handle:
-            line = raw.strip()
-            if not line:
+
+def parse_count_table(path):
+    with open(path) as fh:
+        first=fh.readline().rstrip('\n')
+        delim=sniff_delim(first)
+    counts=OrderedDict()
+    with open(path) as fh:
+        reader=csv.reader(fh, delimiter=delim)
+        header=next(reader)
+        samples=[x.strip() for x in header[1:]]
+        for row in reader:
+            if not row:
                 continue
-            if line.startswith(">"):
-                current = line[1:].split()[0]
-                if current in seqs:
-                    raise SystemExit(f"Identifiant FASTA dupliqué : {current}")
-                seqs[current] = []
-            elif current is None:
-                raise SystemExit("FASTA invalide : séquence avant le premier en-tête")
-            else:
-                seqs[current].append(line.upper())
-    return {k: "".join(v) for k, v in seqs.items()}
+            asv=row[0].strip()
+            vals=[]
+            for x in row[1:1+len(samples)]:
+                x=x.strip()
+                vals.append(int(float(x)) if x not in ('','NA','nan') else 0)
+            counts[asv]=dict(zip(samples, vals))
+    return samples, counts
 
-def clean_taxon(value):
-    value = str(value).strip().strip(";")
-    return value
 
-def informative(ranks):
-    bad = {"", "na", "nan", "none", "unassigned", "unknown", "root"}
-    return [x for x in (clean_taxon(v) for v in ranks) if x.lower() not in bad]
+def clean_tax(x):
+    x=(x or '').strip()
+    if x.lower() in ('', 'na', 'nan', 'none', 'unassigned', 'unknown'):
+        return ''
+    return x
 
-def tax_string(ranks):
-    return ";".join(informative(ranks)) or "Unassigned"
 
-def contains(text, terms):
-    low = text.lower()
-    return any(term in low for term in terms)
+def choose_domain(silva, pr2):
+    sdom=clean_tax(silva.get('domain',''))
+    pdom=clean_tax(pr2.get('domain',''))
+    text=' '.join([clean_tax(v) for v in silva.values()]).lower()
+    if 'mitochond' in text:
+        return 'Mitochondria'
+    if 'chloroplast' in text or 'plastid' in text:
+        return 'Plastid'
+    if sdom.lower() in ('bacteria','archaea'):
+        return sdom.capitalize() if sdom.lower()=='bacteria' else 'Archaea'
+    if pdom:
+        return 'Eukaryota'
+    if sdom and sdom.lower() not in ('eukaryota','eukaryote','opisthokonta'):
+        return sdom
+    return 'Unresolved'
 
-def safe_name(value):
-    return "".join(c if c.isalnum() or c in "_-" else "_" for c in value)
+seqs=parse_fasta(silva_asv)
+silva=parse_tax_table(silva_tax)
+pr2=parse_tax_table(pr2_tax)
+samples, counts=parse_count_table(silva_table)
 
-silva_path = taxonomy_file(silva_root, "silva")
-pr2_path = taxonomy_file(pr2_root, "pr2")
-silva = read_taxonomy(silva_path)
-pr2 = read_taxonomy(pr2_path)
-seqs = read_fasta(fasta_path)
+consensus=[]
+domain_summary=defaultdict(int)
+domain_per_sample={s:defaultdict(int) for s in samples}
 
-with table_path.open(encoding="utf-8-sig", newline="") as handle:
-    raw_rows = list(csv.reader(handle, delimiter="\t"))
-if len(raw_rows) < 2:
-    raise SystemExit(f"Table ASV vide ou invalide : {table_path}")
+with open(os.path.join(integrated_dir, 'taxonomy_SILVA_original.tsv'), 'w', newline='') as oh:
+    w=csv.writer(oh, delimiter='\t')
+    w.writerow(['ASV','domain','phylum','class','order','family','genus','species'])
+    for asv in counts:
+        r=silva.get(asv,{})
+        w.writerow([asv]+[clean_tax(r.get(k,'')) for k in ['domain','phylum','class','order','family','genus','species']])
 
-header = raw_rows[0]
-if len(header) < 2:
-    raise SystemExit("La table ASV ne contient aucune colonne échantillon.")
-sample_names = header[1:]
-if len(set(sample_names)) != len(sample_names):
-    raise SystemExit("Noms d'échantillons dupliqués dans la table ASV.")
+with open(os.path.join(integrated_dir, 'taxonomy_PR2_original.tsv'), 'w', newline='') as oh:
+    w=csv.writer(oh, delimiter='\t')
+    w.writerow(['ASV','domain','phylum','class','order','family','genus','species'])
+    for asv in counts:
+        r=pr2.get(asv,{})
+        w.writerow([asv]+[clean_tax(r.get(k,'')) for k in ['domain','phylum','class','order','family','genus','species']])
 
-counts = {}
-for line_no, row in enumerate(raw_rows[1:], 2):
-    if not row or not row[0].strip():
-        continue
-    if len(row) != len(header):
-        raise SystemExit(f"Nombre de colonnes incorrect ligne {line_no} de {table_path}")
-    asv = row[0].strip()
-    if asv in counts:
-        raise SystemExit(f"ASV dupliqué dans la table : {asv}")
-    try:
-        vals = [int(float(x or 0)) for x in row[1:]]
-    except ValueError as exc:
-        raise SystemExit(f"Comptage non numérique ligne {line_no}: {exc}")
-    if any(x < 0 for x in vals):
-        raise SystemExit(f"Comptage négatif ligne {line_no}")
-    counts[asv] = vals
+with open(os.path.join(integrated_dir, 'taxonomy_JEDI_consensus.tsv'), 'w', newline='') as oh:
+    w=csv.writer(oh, delimiter='\t')
+    w.writerow(['ASV','Domain_JEDI','Phylum_JEDI','Class_JEDI','Order_JEDI','Family_JEDI','Genus_JEDI','Species_JEDI','Source'])
+    for asv in counts:
+        s=silva.get(asv,{k:'' for k in ['domain','phylum','class','order','family','genus','species']})
+        p=pr2.get(asv,{k:'' for k in ['domain','phylum','class','order','family','genus','species']})
+        domain=choose_domain(s,p)
+        if domain in ('Bacteria','Archaea','Mitochondria','Plastid'):
+            src='SILVA'
+            base=s
+        elif domain == 'Eukaryota':
+            src='PR2'
+            base=p
+        else:
+            src='UNRESOLVED'
+            base=s if any(clean_tax(v) for v in s.values()) else p
+        row=[asv, domain] + [clean_tax(base.get(k,'')) for k in ['phylum','class','order','family','genus','species']] + [src]
+        consensus.append(row)
+        w.writerow(row)
+        total=sum(counts[asv].values())
+        domain_summary[domain]+=total
+        for sample,val in counts[asv].items():
+            domain_per_sample[sample][domain]+=val
 
-missing_fasta = sorted(set(counts) - set(seqs))
-if missing_fasta:
-    raise SystemExit(f"{len(missing_fasta)} ASV de la table sont absents du FASTA")
+with open(os.path.join(integrated_dir, 'ASV_table_JEDI_counts.tsv'), 'w', newline='') as oh:
+    w=csv.writer(oh, delimiter='\t')
+    w.writerow(['ASV']+samples)
+    for asv in counts:
+        w.writerow([asv]+[counts[asv][s] for s in samples])
 
-records = {}
-for asv in counts:
-    s_tax = tax_string(silva.get(asv, []))
-    p_tax = tax_string(pr2.get(asv, []))
-    sl, pl = s_tax.lower(), p_tax.lower()
+with open(os.path.join(integrated_dir, 'ASV_table_JEDI_with_taxonomy.tsv'), 'w', newline='') as oh:
+    w=csv.writer(oh, delimiter='\t')
+    w.writerow(['ASV','Domain_JEDI','Phylum_JEDI','Class_JEDI','Order_JEDI','Family_JEDI','Genus_JEDI','Species_JEDI','Source']+samples+['Sequence'])
+    cdict={r[0]:r[1:] for r in consensus}
+    for asv in counts:
+        row=cdict[asv]
+        w.writerow([asv]+row+[counts[asv][s] for s in samples]+[seqs.get(asv,'')])
 
-    if contains(sl, ["chloroplast", "plastid"]):
-        domain, source, chosen = "Eukaryota_plastid", "SILVA", s_tax
-    elif contains(sl, ["mitochond"]):
-        domain, source, chosen = "Eukaryota_mitochondria", "SILVA", s_tax
-    elif contains(sl, ["archaea", "d_0__archaea", "k__archaea"]):
-        domain, source, chosen = "Archaea", "SILVA", s_tax
-    elif contains(sl, ["bacteria", "d_0__bacteria", "k__bacteria"]):
-        domain, source, chosen = "Bacteria", "SILVA", s_tax
-    elif contains(pl, ["eukaryota", "eukaryote", "kingdom__eukaryota"]):
-        domain, source, chosen = "Eukaryota", "PR2", p_tax
-    elif p_tax != "Unassigned":
-        domain, source, chosen = "Eukaryota_candidate", "PR2", p_tax
-    elif s_tax != "Unassigned":
-        domain, source, chosen = "Unresolved_SILVA", "SILVA", s_tax
+with open(os.path.join(integrated_dir, 'domain_summary.tsv'), 'w', newline='') as oh:
+    w=csv.writer(oh, delimiter='\t')
+    w.writerow(['Domain','Total_reads'])
+    for dom,total in sorted(domain_summary.items()):
+        w.writerow([dom,total])
+
+all_domains=sorted({d for smp in domain_per_sample.values() for d in smp.keys()})
+with open(os.path.join(integrated_dir, 'domain_counts_per_sample.tsv'), 'w', newline='') as oh:
+    w=csv.writer(oh, delimiter='\t')
+    w.writerow(['Sample']+all_domains)
+    for s in samples:
+        w.writerow([s]+[domain_per_sample[s].get(d,0) for d in all_domains])
+
+with open(os.path.join(integrated_dir, 'domain_relative_abundance_per_sample.tsv'), 'w', newline='') as oh:
+    w=csv.writer(oh, delimiter='\t')
+    w.writerow(['Sample']+all_domains)
+    for s in samples:
+        total=sum(domain_per_sample[s].values())
+        vals=[(domain_per_sample[s].get(d,0)/total if total else 0) for d in all_domains]
+        w.writerow([s]+vals)
+
+for dom in all_domains:
+    path=os.path.join(integrated_dir,'tables_by_domain',f'{dom}_ASV_table.tsv')
+    dom_asvs=[r[0] for r in consensus if r[1]==dom]
+    with open(path,'w',newline='') as oh:
+        w=csv.writer(oh, delimiter='\t')
+        w.writerow(['ASV']+samples)
+        for asv in dom_asvs:
+            w.writerow([asv]+[counts[asv][s] for s in samples])
+
+with open(os.path.join(integrated_dir, 'alpha_diversity_unrarefied.tsv'), 'w', newline='') as oh:
+    w=csv.writer(oh, delimiter='\t')
+    w.writerow(['Sample','Observed_ASVs','Shannon','Simpson','Reads'])
+    for s in samples:
+        vec=[counts[a][s] for a in counts if counts[a][s] > 0]
+        reads=sum(vec)
+        observed=len(vec)
+        if reads:
+            ps=[v/reads for v in vec]
+            sh=-sum(p*math.log(p) for p in ps if p>0)
+            sim=1-sum(p*p for p in ps)
+        else:
+            sh=0.0
+            sim=0.0
+        w.writerow([s,observed,sh,sim,reads])
+
+with open(os.path.join(integrated_dir, 'rarefaction_expected_ASVs.tsv'), 'w', newline='') as oh:
+    w=csv.writer(oh, delimiter='\t')
+    depths=[]
+    totals={s:sum(counts[a][s] for a in counts) for s in samples}
+    max_depth=max(totals.values()) if totals else 0
+    if max_depth == 0:
+        depths=[0]
     else:
-        domain, source, chosen = "Unassigned", "none", "Unassigned"
-
-    records[asv] = {
-        "domain": domain,
-        "source": source,
-        "chosen": chosen,
-        "silva": s_tax,
-        "pr2": p_tax,
-        "length": len(seqs[asv]),
-    }
-
-ordered_asvs = list(counts)
-domains = sorted({records[a]["domain"] for a in ordered_asvs})
-
-# Taxonomie intégrée.
-with (outdir / "taxonomy_JEDI_consensus.tsv").open("w", encoding="utf-8", newline="") as handle:
-    w = csv.writer(handle, delimiter="\t", lineterminator="\n")
-    w.writerow(["ASV_ID", "JEDI_domain", "selected_source", "selected_taxonomy",
-                "SILVA_taxonomy", "PR2_taxonomy", "ASV_length"])
-    for asv in ordered_asvs:
-        r = records[asv]
-        w.writerow([asv, r["domain"], r["source"], r["chosen"], r["silva"], r["pr2"], r["length"]])
-
-# Tables ASV brute et enrichie.
-with (outdir / "ASV_table_JEDI_counts.tsv").open("w", encoding="utf-8", newline="") as handle:
-    w = csv.writer(handle, delimiter="\t", lineterminator="\n")
-    w.writerow(["ASV_ID"] + sample_names)
-    for asv in ordered_asvs:
-        w.writerow([asv] + counts[asv])
-
-with (outdir / "ASV_table_JEDI_with_taxonomy.tsv").open("w", encoding="utf-8", newline="") as handle:
-    w = csv.writer(handle, delimiter="\t", lineterminator="\n")
-    w.writerow(["ASV_ID", "JEDI_domain", "selected_source", "selected_taxonomy",
-                "SILVA_taxonomy", "PR2_taxonomy", "ASV_length"] + sample_names)
-    for asv in ordered_asvs:
-        r = records[asv]
-        w.writerow([asv, r["domain"], r["source"], r["chosen"], r["silva"], r["pr2"], r["length"]] + counts[asv])
-
-# Une table de comptages par domaine, sans supprimer les tables globales.
-for domain in domains:
-    path = outdir / "tables_by_domain" / f"ASV_counts_{safe_name(domain)}.tsv"
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        w = csv.writer(handle, delimiter="\t", lineterminator="\n")
-        w.writerow(["ASV_ID", "selected_taxonomy"] + sample_names)
-        for asv in ordered_asvs:
-            if records[asv]["domain"] == domain:
-                w.writerow([asv, records[asv]["chosen"]] + counts[asv])
-
-# Synthèses par domaine.
-domain_counts = {d: [0] * len(sample_names) for d in domains}
-domain_richness = defaultdict(int)
-for asv in ordered_asvs:
-    d = records[asv]["domain"]
-    domain_richness[d] += 1
-    domain_counts[d] = [a + b for a, b in zip(domain_counts[d], counts[asv])]
-
-with (outdir / "domain_counts_per_sample.tsv").open("w", encoding="utf-8", newline="") as handle:
-    w = csv.writer(handle, delimiter="\t", lineterminator="\n")
-    w.writerow(["JEDI_domain"] + sample_names)
-    for d in domains:
-        w.writerow([d] + domain_counts[d])
-
-sample_totals = [sum(counts[a][i] for a in ordered_asvs) for i in range(len(sample_names))]
-with (outdir / "domain_relative_abundance_per_sample.tsv").open("w", encoding="utf-8", newline="") as handle:
-    w = csv.writer(handle, delimiter="\t", lineterminator="\n")
-    w.writerow(["JEDI_domain"] + sample_names)
-    for d in domains:
-        rel = [domain_counts[d][i] / sample_totals[i] if sample_totals[i] else 0.0 for i in range(len(sample_names))]
-        w.writerow([d] + [f"{x:.10f}" for x in rel])
-
-with (outdir / "domain_summary.tsv").open("w", encoding="utf-8", newline="") as handle:
-    w = csv.writer(handle, delimiter="\t", lineterminator="\n")
-    w.writerow(["JEDI_domain", "ASV_richness", "total_reads"])
-    for d in domains:
-        w.writerow([d, domain_richness[d], sum(domain_counts[d])])
-
-# Alpha-diversité non raréfiée.
-with (outdir / "alpha_diversity_unrarefied.tsv").open("w", encoding="utf-8", newline="") as handle:
-    w = csv.writer(handle, delimiter="\t", lineterminator="\n")
-    w.writerow(["sample", "total_reads", "observed_ASVs", "Shannon", "Simpson_1_minus_D"])
-    for i, sample in enumerate(sample_names):
-        vals = [counts[a][i] for a in ordered_asvs if counts[a][i] > 0]
-        total = sum(vals)
-        observed = len(vals)
-        if total:
-            proportions = [x / total for x in vals]
-            shannon = -sum(p * math.log(p) for p in proportions)
-            simpson = 1.0 - sum(p * p for p in proportions)
-        else:
-            shannon = simpson = 0.0
-        w.writerow([sample, total, observed, f"{shannon:.10f}", f"{simpson:.10f}"])
-
-# Raréfaction analytique : espérance du nombre d'ASV observés à profondeur n.
-def logchoose(n, k):
-    if k < 0 or k > n:
-        return float("-inf")
-    return math.lgamma(n + 1) - math.lgamma(k + 1) - math.lgamma(n - k + 1)
-
-def expected_richness(abundances, depth):
-    total = sum(abundances)
-    if depth <= 0 or total == 0:
-        return 0.0
-    if depth >= total:
-        return float(sum(x > 0 for x in abundances))
-    denominator = logchoose(total, depth)
-    expected = 0.0
-    for abundance in abundances:
-        if abundance <= 0:
-            continue
-        if total - abundance < depth:
-            p_absent = 0.0
-        else:
-            p_absent = math.exp(logchoose(total - abundance, depth) - denominator)
-        expected += 1.0 - p_absent
-    return expected
-
-with (outdir / "rarefaction_expected_ASVs.tsv").open("w", encoding="utf-8", newline="") as handle:
-    w = csv.writer(handle, delimiter="\t", lineterminator="\n")
-    w.writerow(["sample", "depth", "expected_observed_ASVs"])
-    for i, sample in enumerate(sample_names):
-        abund = [counts[a][i] for a in ordered_asvs]
-        total = sum(abund)
-        if total == 0:
-            w.writerow([sample, 0, "0.000000"])
-            continue
-        depths = {1, total}
-        for j in range(1, npoints + 1):
-            depths.add(max(1, round(total * j / npoints)))
-        for depth in sorted(depths):
-            w.writerow([sample, depth, f"{expected_richness(abund, depth):.6f}"])
-
-shutil.copy2(fasta_path, outdir / "ASV_sequences_JEDI.fasta")
-shutil.copy2(silva_path, outdir / "taxonomy_SILVA_original.tsv")
-shutil.copy2(pr2_path, outdir / "taxonomy_PR2_original.tsv")
-
-print(f"Taxonomie SILVA : {silva_path}")
-print(f"Taxonomie PR2   : {pr2_path}")
-print(f"ASV intégrés    : {len(ordered_asvs)}")
-print(f"Échantillons    : {len(sample_names)}")
-print("Domaines        : " + ", ".join(domains))
+        step=max(1000, max_depth//20)
+        depths=list(range(step, max_depth+1, step))
+    w.writerow(['Sample','Depth','Expected_ASVs'])
+    for s in samples:
+        total=totals[s]
+        abund=[counts[a][s] for a in counts if counts[a][s] > 0]
+        for m in depths:
+            if total == 0 or m == 0:
+                exp=0.0
+            elif m >= total:
+                exp=float(len(abund))
+            else:
+                exp=0.0
+                for n in abund:
+                    if total - n >= m:
+                        num=math.lgamma(total-n+1)-math.lgamma(m+1)-math.lgamma(total-n-m+1)
+                        den=math.lgamma(total+1)-math.lgamma(m+1)-math.lgamma(total-m+1)
+                        p0=math.exp(num-den)
+                    else:
+                        p0=0.0
+                    exp += 1-p0
+            w.writerow([s,m,exp])
 PY
+}
 
-# ---------------------------- CONTRÔLES FINAUX -------------------------------
-REQUIRED_OUTPUTS=(
-    "${INTEGRATED_OUT}/ASV_table_JEDI_counts.tsv"
-    "${INTEGRATED_OUT}/ASV_table_JEDI_with_taxonomy.tsv"
-    "${INTEGRATED_OUT}/taxonomy_JEDI_consensus.tsv"
-    "${INTEGRATED_OUT}/domain_summary.tsv"
-    "${INTEGRATED_OUT}/domain_counts_per_sample.tsv"
-    "${INTEGRATED_OUT}/domain_relative_abundance_per_sample.tsv"
-    "${INTEGRATED_OUT}/alpha_diversity_unrarefied.tsv"
-    "${INTEGRATED_OUT}/rarefaction_expected_ASVs.tsv"
-    "${INTEGRATED_OUT}/ASV_sequences_JEDI.fasta"
-)
-for output in "${REQUIRED_OUTPUTS[@]}"; do
-    [[ -s "$output" ]] || die "Sortie finale absente ou vide : ${output}"
-done
+write_manifest() {
+  log "Écriture du manifest final"
+  cat > "${RUN_MANIFEST}" <<EOF_MANIFEST
+key	value
+script_version	${SCRIPT_VERSION}
+date	$(date '+%F %T')
+project_root	${PROJECT_ROOT}
+raw_dir	${RAW_DIR}
+jedi_dir	${JEDI_DIR}
+silva_dir	${SILVA_DIR}
+pr2_dir	${PR2_DIR}
+integrated_dir	${INTEGRATED_DIR}
+nfcore_version	${NFCORE_VERSION}
+profile	${PROFILE}
+forward_primer	${FORWARD_PRIMER}
+reverse_primer	${REVERSE_PRIMER}
+trunc_len_f	${TRUNC_LEN_F}
+trunc_len_r	${TRUNC_LEN_R}
+mergepairs_strategy	consensus
+silva_reference	${SILVA_REF}
+pr2_reference	${PR2_REF}
+preloaded_container	${PRELOAD_IMAGE_SIF}
+nxf_singularity_cachedir	${NXF_SINGULARITY_CACHEDIR}
+singularity_cachedir	${SINGULARITY_CACHEDIR}
+singularity_tmpdir	${SINGULARITY_TMPDIR}
+EOF_MANIFEST
+}
 
-{
-    printf 'parameter\tvalue\n'
-    printf 'date\t%s\n' "$(date --iso-8601=seconds)"
-    printf 'project_dir\t%s\n' "$PROJECT_DIR"
-    printf 'jedi_root\t%s\n' "$JEDI_ROOT"
-    printf 'nfcore_ampliseq\t%s\n' "$NFCORE_VERSION"
-    printf 'profile\t%s\n' "$PROFILE"
-    printf 'forward_primer\t%s\n' "$FW_PRIMER"
-    printf 'reverse_primer\t%s\n' "$RV_PRIMER"
-    printf 'silva_database\t%s\n' "$SILVA_DB"
-    printf 'pr2_database\t%s\n' "$PR2_DB"
-    printf 'mergepairs_strategy\tconsensus\n'
-    printf 'trunclen_f\t%s\n' "$TRUNCLEN_F"
-    printf 'trunclen_r\t%s\n' "$TRUNCLEN_R"
-    printf 'max_ee\t%s\n' "$MAX_EE"
-    printf 'qiime_downstream\tdisabled_to_avoid_emperor_tmp_failure\n'
-} > "${INTEGRATED_OUT}/run_manifest.tsv"
+validate_final_outputs() {
+  local required=(
+    "${SILVA_DIR}/dada2/ASV_seqs.fasta"
+    "${SILVA_DIR}/dada2/table.tsv"
+    "${INTEGRATED_DIR}/ASV_table_JEDI_counts.tsv"
+    "${INTEGRATED_DIR}/ASV_table_JEDI_with_taxonomy.tsv"
+    "${INTEGRATED_DIR}/taxonomy_JEDI_consensus.tsv"
+    "${INTEGRATED_DIR}/taxonomy_SILVA_original.tsv"
+    "${INTEGRATED_DIR}/taxonomy_PR2_original.tsv"
+    "${INTEGRATED_DIR}/domain_summary.tsv"
+    "${INTEGRATED_DIR}/domain_counts_per_sample.tsv"
+    "${INTEGRATED_DIR}/domain_relative_abundance_per_sample.tsv"
+    "${INTEGRATED_DIR}/alpha_diversity_unrarefied.tsv"
+    "${INTEGRATED_DIR}/rarefaction_expected_ASVs.tsv"
+    "${RUN_MANIFEST}"
+  )
+  local f
+  for f in "${required[@]}"; do
+    [[ -s "${f}" ]] || die "Sortie finale absente ou vide : ${f}"
+  done
+  printf 'SUCCESS\t%s\tJEDI pipeline completed\n' "$(date '+%F %T')" > "${SUCCESS_FLAG}"
+  if [[ "${KEEP_FAILURE_MARKER}" != "1" ]]; then
+    rm -f "${FAIL_FLAG}" || true
+  fi
+  log "Validation finale OK"
+}
 
-# Marqueur écrit uniquement après validation de toutes les sorties.
-printf 'SUCCESS\t%s\n' "$(date --iso-8601=seconds)" > "${INTEGRATED_OUT}/PIPELINE_SUCCESS.txt"
+main() {
+  acquire_lock
+  setup_environment
+  check_prerequisites
+  write_nextflow_config
+  preload_problematic_container
+  build_samplesheet
+  check_fastq_integrity
 
-log "Pipeline JEDI terminé avec succès."
-log "Résultats intégrés : ${INTEGRATED_OUT}"
-log "Table principale   : ${INTEGRATED_OUT}/ASV_table_JEDI_with_taxonomy.tsv"
-log "Résumé domaines    : ${INTEGRATED_OUT}/domain_summary.tsv"
-log "Raréfaction        : ${INTEGRATED_OUT}/rarefaction_expected_ASVs.tsv"
+  log "Pipeline ${SCRIPT_VERSION}"
+  log "Racine ${JEDI_DIR}"
+  log "nf-core/ampliseq ${NFCORE_VERSION}"
+  log "Profil ${PROFILE}"
+  log "Classifieurs ${SILVA_REF} et ${PR2_REF}"
+  log "Amorces ${FORWARD_PRIMER} / ${REVERSE_PRIMER}"
+
+  if [[ "${FORCE_ALL}" == "1" ]]; then
+    FORCE_SILVA=1
+    FORCE_PR2=1
+  fi
+
+  if [[ "${FORCE_SILVA}" == "1" || ! has_silva_success ]]; then
+    log "ÉTAPE 1/3 : DADA2/JEDI et taxonomie SILVA"
+    write_silva_params
+    run_nfcore "${SILVA_PARAMS}" "${JEDI_DIR}/work/silva" "SILVA"
+  else
+    log "ÉTAPE 1/3 : SILVA déjà disponible, réutilisation"
+  fi
+
+  has_silva_success || die "Les sorties SILVA minimales ne sont pas présentes après exécution"
+
+  if [[ "${FORCE_PR2}" == "1" || ! has_pr2_success ]]; then
+    log "ÉTAPE 2/3 : taxonomie PR2 sur ASV existants"
+    rm -rf "${PR2_DIR}" && mkdir -p "${PR2_DIR}"
+    write_pr2_params
+    run_nfcore "${PR2_PARAMS}" "${JEDI_DIR}/work/pr2" "PR2"
+  else
+    log "ÉTAPE 2/3 : PR2 déjà disponible, réutilisation"
+  fi
+
+  has_pr2_success || die "Les sorties PR2 minimales ne sont pas présentes après exécution"
+
+  log "ÉTAPE 3/3 : intégration cross-domain"
+  integrate_outputs
+  write_manifest
+  validate_final_outputs
+  log "Pipeline JEDI terminé avec succès"
+}
+
+main "$@"
