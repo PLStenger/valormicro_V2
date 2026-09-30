@@ -674,6 +674,7 @@ integrate_results() {
 
     local silva_asv="${SILVA_DIR}/dada2/ASV_seqs.fasta"
     local silva_table="${SILVA_DIR}/dada2/ASV_table.tsv"
+    local silva_tax="${SILVA_DIR}/dada2/ASV_tax_species.silva.tsv"
     local silva_tax
     local pr2_tax
 
