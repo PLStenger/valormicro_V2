@@ -173,7 +173,7 @@ check_prerequisites() {
     [[ -f "${PROJECT_ROOT}/01_raw_data/00_infos_data.xlsx" || -f "${OLD_SAMPLES_TSV}" ]] || die \
       "Aucune source de métadonnées trouvée (ni ${OLD_SAMPLES_TSV}, ni 00_infos_data.xlsx)"
 }
-
+ 
 write_nextflow_config() {
     cat > "${NF_INFRA_CFG}" <<EOF
 process {
@@ -195,29 +195,6 @@ singularity {
 
 apptainer {
   enabled = false
-}
-
-docker.enabled = false
-podman.enabled = false
-charliecloud.enabled = false
-
-params {
-  validate_params = true
-}
-EOF
-}
-
-singularity {
-  enabled = true
-  autoMounts = true
-  cacheDir = '${SINGULARITY_IMAGE_CACHE}'
-  pullTimeout = '${PULL_TIMEOUT}'
-}
-
-apptainer {
-  enabled = true
-  autoMounts = true
-  cacheDir = '${SINGULARITY_IMAGE_CACHE}'
 }
 
 docker.enabled = false
