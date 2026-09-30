@@ -627,9 +627,9 @@ EOF
 }
 
 has_silva_success() {
-    [[ -s "${SILVA_DIR}/dada2/table.tsv" ]] && \
-    [[ -s "${SILVA_DIR}/dada2/representative_sequences.fasta" ]] && \
-    find "${SILVA_DIR}" -type f \( -iname '*taxonomy*.tsv' -o -iname '*tax*.tsv' \) | grep -q .
+    [[ -s "${SILVA_DIR}/dada2/ASV_table.tsv" ]] && \
+    [[ -s "${SILVA_DIR}/dada2/ASV_seqs.fasta" ]] && \
+    [[ -s "${SILVA_DIR}/dada2/ASV_tax_species.silva.tsv" ]]
 }
 
 has_pr2_success() {
@@ -672,12 +672,12 @@ run_nfcore() {
 integrate_results() {
     log "Intégration SILVA + PR2"
 
-    local silva_asv="${SILVA_DIR}/dada2/representative_sequences.fasta"
-    local silva_table="${SILVA_DIR}/dada2/table.tsv"
+    local silva_asv="${SILVA_DIR}/dada2/ASV_seqs.fasta"
+    local silva_table="${SILVA_DIR}/dada2/ASV_table.tsv"
     local silva_tax
     local pr2_tax
 
-    silva_tax="$(find_taxonomy_file "${SILVA_DIR}")"
+    silva_tax="${SILVA_DIR}/dada2/ASV_tax_species.silva.tsv"
     pr2_tax="$(find_taxonomy_file "${PR2_DIR}")"
 
     [[ -s "${silva_asv}" ]] || die "FASTA ASV SILVA absent : ${silva_asv}"
