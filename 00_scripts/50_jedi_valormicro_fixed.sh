@@ -312,17 +312,34 @@ PY
   n=$(awk 'END{print NR-1}' "${SAMPLESHEET}")
   [[ "${n}" -gt 0 ]] || die "Samplesheet vide"
   log "${n} échantillons écrits dans ${SAMPLESHEET}"
+  sed -i 's/\r$//' "${SAMPLESHEET}"
 }
 
 check_fastq_integrity() {
   log "Contrôle gzip de tous les FASTQ"
+
   local count=0
+  local sample r1 r2
+
   while IFS=$'\t' read -r sample r1 r2; do
     [[ "${sample}" == "sample" ]] && continue
+
+    sample="${sample//$'\r'/}"
+    r1="${r1//$'\r'/}"
+    r2="${r2//$'\r'/}"
+
+    r1="${r1%$'\r'}"
+    r2="${r2%$'\r'}"
+
+    [[ -f "${r1}" ]] || die "FASTQ R1 absent : ${r1}"
+    [[ -f "${r2}" ]] || die "FASTQ R2 absent : ${r2}"
+
     gzip -t "${r1}"
     gzip -t "${r2}"
-    count=$((count+1))
-  done < "${SAMPLESHEET}"
+
+    count=$((count + 1))
+  done < <(tr -d '\r' < "${SAMPLESHEET}")
+
   log "${count} paires FASTQ validées"
 }
 
