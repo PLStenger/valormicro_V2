@@ -417,7 +417,21 @@ run_nfcore() {
 }
 
 has_silva_success() {
-  [[ -s "${SILVA_DIR}/dada2/ASV_seqs.fasta" ]] && [[ -s "${SILVA_DIR}/dada2/table.tsv" ]]
+  local asv_fasta="${SILVA_DIR}/dada2/ASV_seqs.fasta"
+  local asv_table="${SILVA_DIR}/dada2/table.tsv"
+  local taxonomy_file=""
+
+  [[ -s "${asv_fasta}" ]] || return 1
+  [[ -s "${asv_table}" ]] || return 1
+
+  taxonomy_file="$(
+    find "${SILVA_DIR}" -type f \
+      \( -iname '*taxonomy*.tsv' -o -iname '*tax*.tsv' -o -iname '*classification*.tsv' \) \
+      ! -size 0c \
+      | head -n 1
+  )"
+
+  [[ -n "${taxonomy_file}" ]]
 }
 
 has_pr2_success() {
