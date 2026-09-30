@@ -292,10 +292,115 @@ if not sample or not sample[0].isalpha():
     sample = f"S_{sample}"
     pairs.append((sample, fastq_r1[key], fastq_r2[key]))
 
-if not pairs:
-    raise SystemExit('Aucune paire R1/R2 détectée dans 01_raw_data')
-
 rows = read_xlsx(xlsx)
+def clean_header(x):
+    return re.sub(r'\s+', ' ', str(x).strip().lower())
+
+def nfcore_id(value):
+    value = re.sub(r'[^A-Za-z0-9_]+', '_', str(value).strip())
+    value = re.sub(r'_+', '_', value).strip('_')
+    if not value or not value[0].isalpha():
+        value = f"S_{value}"
+    return value
+
+def resolve_fastq(raw_dir, filename):
+    filename = os.path.basename(str(filename).strip())
+
+    direct = os.path.join(raw_dir, filename)
+    if os.path.isfile(direct):
+        return direct
+
+    found = []
+    for root, _, files in os.walk(raw_dir):
+        if filename in files:
+            found.append(os.path.join(root, filename))
+
+    if len(found) == 1:
+        return found[0]
+
+    if len(found) == 0:
+        raise SystemExit(
+            f"FASTQ introuvable dans {raw_dir} (y compris sous-dossiers) : {filename}"
+        )
+
+    raise SystemExit(
+        f"FASTQ ambigu, plusieurs fichiers portent ce nom : {filename}\n"
+        + "\n".join(found)
+    )
+
+pairs = []
+seen = set()
+
+for sheet_name, sheet in rows:
+    if not sheet:
+        continue
+
+    header = None
+    header_idx = None
+
+    for i, row in enumerate(sheet[:20]):
+        norm = [clean_header(c) for c in row]
+        if "r1" in norm and "r2" in norm:
+            header = norm
+            header_idx = i
+            break
+
+    if header is None:
+        continue
+
+    try:
+        r1_col = header.index("r1")
+        r2_col = header.index("r2")
+    except ValueError:
+        continue
+
+    label_col = None
+    for candidate in ("newlabel", "sample", "sampleid", "sample id",
+                      "echantillon", "échantillon"):
+        if candidate in header:
+            label_col = header.index(candidate)
+            break
+
+    if label_col is None:
+        raise SystemExit(
+            f"Feuille '{sheet_name}' : aucune colonne Newlabel/sample détectée."
+        )
+
+    for row_number, row in enumerate(sheet[header_idx + 1:], start=header_idx + 2):
+        if not any(str(x).strip() for x in row):
+            continue
+
+        r1_name = row[r1_col].strip() if r1_col < len(row) else ""
+        r2_name = row[r2_col].strip() if r2_col < len(row) else ""
+        label = row[label_col].strip() if label_col < len(row) else ""
+
+        if not r1_name and not r2_name and not label:
+            continue
+
+        if not all((r1_name, r2_name, label)):
+            raise SystemExit(
+                f"Feuille '{sheet_name}', ligne Excel {row_number} : "
+                "R1, R2 et Newlabel/sample doivent tous être renseignés."
+            )
+
+        sample = nfcore_id(label)
+
+        if sample in seen:
+            raise SystemExit(
+                f"ID nf-core dupliqué après normalisation : {sample}"
+            )
+
+        r1 = resolve_fastq(raw_dir, r1_name)
+        r2 = resolve_fastq(raw_dir, r2_name)
+
+        seen.add(sample)
+        pairs.append((sample, r1, r2))
+
+if not pairs:
+    raise SystemExit(
+        "Aucune paire valide n'a été créée depuis les colonnes R1/R2/Newlabel "
+        f"du fichier {xlsx}"
+    )
 negative_tokens = {'blank','neg','negative','ntc','control','controle','ctrl'}
 metadata = {}
 for _, sheet in rows:
@@ -321,7 +426,7 @@ for _, sheet in rows:
                 sid=v.strip()
                 break
         if sid:
-            sid_clean=re.sub(r'[^A-Za-z0-9_.-]+', '_', sid)
+            sid_clean = nfcore_id(sid)
             metadata[sid_clean]={'negative':'yes' if any(tok in vals for tok in negative_tokens) else 'no'}
 
 with open(outfile, 'w', newline='') as oh, open(shared,'w',newline='') as dbg:
