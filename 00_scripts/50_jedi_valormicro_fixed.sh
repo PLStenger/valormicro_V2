@@ -500,46 +500,59 @@ write_silva_params() {
   cat > "${SILVA_PARAMS}" <<EOF
 input: "${SAMPLESHEET}"
 outdir: "${SILVA_DIR}"
-FWprimer: "${FORWARD_PRIMER}"
-RVprimer: "${REVERSE_PRIMER}"
-trimleftf: 0
-trimleftr: 0
-trunclenf: ${TRUNC_LEN_F}
-trunclenr: ${TRUNC_LEN_R}
-maxeef: ${MAX_EE_F}
-maxeer: ${MAX_EE_R}
-truncq: 2
-truncqmin: ${TRUNC_QMIN}
-truncrmin: ${TRUNC_RMIN}
-skipfastqc: false
-withcutadapt: true
-cutadaptminoverlap: 5
-cutadapterrorrate: 0.1
-denoise: dada2
-singleend: false
-multiplesequencingruns: false
-pooldada2: false
-mergepairsstrategy: consensus
-mergepairsconsensusmatch: 1
-mergepairsconsensusmismatch: -2
-mergepairsconsensusgap: -4
-mergepairsconsensusminoverlap: 12
-mergepairsconsensusmaxmismatch: 0
-mergepairsconsensuspercentilecutoff: 0.001
-dadareftaxonomy: "${SILVA_REF}"
-cutdadareftaxonomy: true
-excludetaxa: none
-skipbarrnap: false
-skipqiime: true
-skipqiimedownstream: true
-skipdadaaddspecies: true
-skipabundancetables: true
-skipalphararefaction: true
-skipdiversityindices: true
-ancombcformula: none
-reporttitle: "JEDI valormicro - ASV et SILVA"
-saveintermediates: true
-minlen: 50
+
+FW_primer: "${FORWARD_PRIMER}"
+RV_primer: "${REVERSE_PRIMER}"
+
+trim_left_f: 0
+trim_left_r: 0
+
+trunc_len_f: ${TRUNC_LEN_F}
+trunc_len_r: ${TRUNC_LEN_R}
+
+max_ee_f: ${MAX_EE_F}
+max_ee_r: ${MAX_EE_R}
+
+trunc_q: 2
+trunc_qmin: ${TRUNC_QMIN}
+trunc_rmin: ${TRUNC_RMIN}
+
+skip_fastqc: false
+with_cutadapt: true
+cutadapt_min_overlap: 5
+cutadapt_error_rate: 0.1
+
+denoise: "dada2"
+single_end: false
+multiple_sequencing_runs: false
+pool_dada2: false
+
+mergepairs_strategy: "consensus"
+mergepairs_consensus_match: 1
+mergepairs_consensus_mismatch: -2
+mergepairs_consensus_gap: -4
+mergepairs_consensus_minoverlap: 12
+mergepairs_consensus_maxmismatch: 0
+mergepairs_consensus_percentile_cutoff: 0.001
+
+dada_ref_taxonomy: "${SILVA_REF}"
+cut_dada_ref_taxonomy: true
+
+exclude_taxa: "none"
+skip_barrnap: false
+
+skip_qiime: true
+skip_qiime_downstream: true
+skip_dada_add_species: true
+skip_abundance_tables: true
+skip_alpha_rarefaction: true
+skip_diversity_indices: true
+
+ancombc_formula: "none"
+
+report_title: "JEDI valormicro - ASV et SILVA"
+save_intermediates: true
+min_len: 50
 EOF
 }
 
