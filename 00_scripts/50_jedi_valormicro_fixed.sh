@@ -543,7 +543,7 @@ skip_barrnap: false
 
 skip_qiime: true
 skip_qiime_downstream: true
-skip_dada_add_species: true
+skip_dada_addspecies: true
 skip_abundance_tables: true
 skip_alpha_rarefaction: true
 skip_diversity_indices: true
