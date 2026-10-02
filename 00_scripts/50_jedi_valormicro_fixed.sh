@@ -707,9 +707,9 @@ integrate_outputs() {
     rm -f "${INTEGRATED_DIR}/tables_by_domain"/*.tsv 2>/dev/null || true
   fi
 
-  local silva_table="${SILVA_DIR}/dada2_table.tsv"
-  local silva_asv="${SILVA_DIR}/dada2_ASVseqs.fasta"
-  local silva_tax="${SILVA_DIR}/dada2_taxonomy.tsv"
+local silva_asv="${SILVA_DIR}/dada2/ASV_seqs.fasta"
+local silva_table="${SILVA_DIR}/dada2/ASV_table.tsv"
+local silva_tax="${SILVA_DIR}/dada2/ASV_tax.silva_138_2.tsv"
 
   [[ -s "${silva_table}" ]] || silva_table="${SILVA_DIR}/dada2ASVtable.tsv"
   [[ -s "${silva_asv}" ]] || silva_asv="${SILVA_DIR}/dada2ASVseqs.fasta"
