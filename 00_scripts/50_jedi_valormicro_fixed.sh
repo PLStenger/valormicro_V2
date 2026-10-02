@@ -575,7 +575,9 @@ run_nfcore() {
 }
 
 has_silva_success() {
-  [[ -s "${SILVA_DIR}/dada2_ASVseqs.fasta" ]] && [[ -s "${SILVA_DIR}/dada2_table.tsv" || -s "${SILVA_DIR}/dada2ASVtable.tsv" ]]
+  [[ -s "${SILVA_DIR}/dada2/ASV_seqs.fasta" ]] \
+    && [[ -s "${SILVA_DIR}/dada2/ASV_table.tsv" ]] \
+    && [[ -s "${SILVA_DIR}/dada2/ASV_tax.silva_138_2.tsv" ]]
 }
 
 run_silva_pipeline() {
