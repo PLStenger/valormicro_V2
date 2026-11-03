@@ -4,10 +4,10 @@ shopt -s nullglob
 
 ############################################
 # JEDI cross-domain pipeline for Valormicro
-# Complete fixed version v5
+# BC + MEGA Bact04; resumable, audited V8
 ############################################
 
-SCRIPT_VERSION="JEDI_VALORMICRO_MEGA_V6_2026-11-02"
+SCRIPT_VERSION="JEDI_VALORMICRO_BC_BACT04_V8_2026-11-03"
 
 PROJECT_ROOT="${PROJECT_ROOT:-/nvme/bio/data_fungi/valormicro_V2}"
 RAW_DIR="${PROJECT_ROOT}/01_raw_data"
@@ -15,27 +15,34 @@ OLD_PIPE_DIR="${PROJECT_ROOT}/02_amplicon_pipeline"
 OLD_SAMPLES_TSV="${OLD_PIPE_DIR}/04_database_files/samples.tsv"
 XLSX_METADATA="${RAW_DIR}/00_infos_data.xlsx"
 
-# A new directory per invocation; never reuse or overwrite a previous run.
-JEDI_DIR="${JEDI_DIR:-${PROJECT_ROOT}/03_JEDI_pipeline_MEGA_$(date +%Y%m%d_%H%M%S)_$$}"
-JEDI_DIR="$(realpath -m "${JEDI_DIR}")"
-OLD_JEDI_DIR="$(realpath -m "${PROJECT_ROOT}/03_JEDI_pipeline")"
+# Dedicated V8 results; same path on rerun enables resume.
+SELF_PATH="$(readlink -f "${BASH_SOURCE[0]}")"
+JEDI_DIR="$(realpath -m "${JEDI_DIR:-${PROJECT_ROOT}/03_JEDI_pipeline_BC_MEGA_Bact04_v8}")"
 case "${JEDI_DIR}/" in
-  "${OLD_JEDI_DIR}/"*|"$(realpath -m "${RAW_DIR}")/"*)
+  "$(realpath -m "${PROJECT_ROOT}/03_JEDI_pipeline")/"*|"$(realpath -m "${RAW_DIR}")/"*|"$(realpath -m "${OLD_PIPE_DIR}")/"*)
     printf 'ERREUR : destination protegee : %s\n' "${JEDI_DIR}" >&2; exit 1 ;;
 esac
-[[ ! -e "${JEDI_DIR}" ]] || { printf 'ERREUR : choisir un dossier inexistant : %s\n' "${JEDI_DIR}" >&2; exit 1; }
-mkdir -p "$(dirname "${JEDI_DIR}")"
-mkdir "${JEDI_DIR}"
-TRANSECTS_DIR="${TRANSECTS_DIR:-${RAW_DIR}/transects_data}"
+[[ "${JEDI_DIR}" != "$(realpath -m "${PROJECT_ROOT}")" && "${JEDI_DIR}" != / ]] || exit 1
+command -v flock >/dev/null || { echo 'Commande flock requise' >&2; exit 1; }
+mkdir -p "${JEDI_DIR}"
+exec 9>"${JEDI_DIR}/.v8.lock"
+flock -n 9 || { echo "Un autre run est actif dans ${JEDI_DIR}" >&2; exit 1; }
+if [[ ! -f "${JEDI_DIR}/.VALORMICRO_V8" ]]; then
+  [[ -z "$(find "${JEDI_DIR}" -mindepth 1 -maxdepth 1 ! -name '.v8.lock' -print -quit)" ]] || {
+    echo 'Dossier non vide non gere par V8. Choisir un autre JEDI_DIR.' >&2; exit 1;
+  }
+  printf 'VALORMICRO_V8\n' > "${JEDI_DIR}/.VALORMICRO_V8"
+fi
+MEGA_DEMUX_TSV="${MEGA_DEMUX_TSV:-${RAW_DIR}/transects_data/Bact04/MEGA_Bact04_demux.tsv}"
 DEMUX_DIR="${JEDI_DIR}/00_demultiplexed"
-MEGA_SAMPLESHEET="${JEDI_DIR}/mega_samplesheet.tsv"
-MEGA_INVENTORY="${JEDI_DIR}/mega_inventory.tsv"
-export FORWARD_PRIMER="${FORWARD_PRIMER:-GTGYCAGCMGCCGCGGTAA}"
-export REVERSE_PRIMER="${REVERSE_PRIMER:-CCGYCAATTYMTTTRAGTTT}"
+MEGA_INVENTORY="${DEMUX_DIR}/mega_inventory.tsv"
+PLAN_JSON="${JEDI_DIR}/demultiplex_plan.json"
+SIGNATURE_FILE="${JEDI_DIR}/input_signature.sha256"
 export KEEP_MEGA_CONTROLS="${KEEP_MEGA_CONTROLS:-1}"
 export DEMUX_MAX_OFFSET="${DEMUX_MAX_OFFSET:-12}"
 export DEMUX_PRIMER_ERRORS="${DEMUX_PRIMER_ERRORS:-2}"
 export DEMUX_MIN_FRACTION="${DEMUX_MIN_FRACTION:-0.01}"
+export PR2_THREADS="${PR2_THREADS:-8}"
 
 INPUT_DIR="${JEDI_DIR}/00_inputs"
 SILVA_DIR="${JEDI_DIR}/01_nfcore_silva"
@@ -54,11 +61,11 @@ LOCK_DIR="${JEDI_DIR}/.jedi_pipeline.lock"
 SUCCESS_FLAG="${INTEGRATED_DIR}/PIPELINE_SUCCESS.txt"
 FAIL_FLAG="${INTEGRATED_DIR}/PIPELINE_FAILED.txt"
 RUN_MANIFEST="${INTEGRATED_DIR}/run_manifest.tsv"
-LOG_FILE="${LOG_DIR}/jedi_pipeline_fixed_v5.log"
+LOG_FILE="${LOG_DIR}/jedi_pipeline_v8.log"
 
 SAMPLESHEET="${INPUT_DIR}/samplesheet_jedi.tsv"
 SAMPLESHEET_DEBUG="${INPUT_DIR}/samplesheet_jedi_debug.tsv"
-SILVA_PARAMS="${INPUT_DIR}/params_silva_fixed_v5.yaml"
+SILVA_PARAMS="${INPUT_DIR}/params_silva_v8.yaml"
 NF_INFRA_CFG="${INPUT_DIR}/nextflow_infrastructure.config"
 
 SILVA_ASV_FASTA="${SILVA_DIR}/dada2/ASV_seqs.fasta"
@@ -131,32 +138,8 @@ on_error() {
 }
 trap 'on_error ${LINENO} "${BASH_COMMAND}"' ERR
 
-LOCK_OWNED=0
-cleanup_lock() {
-  if [[ "${LOCK_OWNED}" == "1" ]]; then rm -rf "${LOCK_DIR}" || true; fi
-}
-trap cleanup_lock EXIT
-
 acquire_lock() {
-  if mkdir "${LOCK_DIR}" 2>/dev/null; then
-    LOCK_OWNED=1
-    printf '%s\n' "$$" > "${LOCK_DIR}/pid"
-    return 0
-  fi
-
-  local old_pid=""
-  if [[ -s "${LOCK_DIR}/pid" ]]; then
-    old_pid="$(cat "${LOCK_DIR}/pid" 2>/dev/null || true)"
-  fi
-  if [[ -n "${old_pid}" ]] && kill -0 "${old_pid}" 2>/dev/null; then
-    die "Un autre run JEDI est actif (PID ${old_pid}) : ${LOCK_DIR}"
-  fi
-
-  log "Suppression d'un verrou obsolète : ${LOCK_DIR}"
-  rm -rf "${LOCK_DIR}"
-  mkdir "${LOCK_DIR}"
-  LOCK_OWNED=1
-    printf '%s\n' "$$" > "${LOCK_DIR}/pid"
+  : # flock FD 9 is already held; released automatically on exit.
 }
 
 require_cmd() {
@@ -257,195 +240,272 @@ preload_problematic_container() {
   log "Alias Nextflow créés vers ${PRELOAD_IMAGE_SIF}"
 }
 
-demultiplex_mega() {
-  log "Demultiplexage conservateur des pools MEGA (tags exacts, deux amorces controlees)"
-  [[ -d "${TRANSECTS_DIR}" ]] || die "Dossier transects absent : ${TRANSECTS_DIR}"
-  mkdir -p "${DEMUX_DIR}"
+write_helpers() {
+  cat > "${INPUT_DIR}/plan_inputs.py" <<'PY_PLAN'
+import csv, hashlib, json, os, re, sys
+from pathlib import Path
+
+old_sheet, old_metadata, xlsx, map_arg, root_arg, plan_path, signature_path, script_path = sys.argv[1:9]
+f=os.environ['FORWARD_PRIMER'].upper();r=os.environ['REVERSE_PRIMER'].upper()
+root=Path(root_arg).resolve()
+paths=[Path(p.strip()).resolve() for p in map_arg.split(',') if p.strip()]
+if not paths:
+    raise SystemExit('Aucun TSV MEGA selectionne')
+if len(paths)!=len(set(paths)):
+    raise SystemExit('Le meme TSV est selectionne plusieurs fois')
+with open(old_sheet) as h: old=list(csv.DictReader(h,delimiter='\t'))
+used={e['sample']:old_sheet for e in old}
+files={}
+def track(p,content=False):
+    p=Path(p).resolve()
+    if not p.is_file() or p.stat().st_size==0:
+        raise SystemExit('Fichier absent ou vide : '+str(p))
+    stat=p.stat();info={'size':stat.st_size,'mtime_ns':stat.st_mtime_ns}
+    if content:info['sha256']=hashlib.sha256(p.read_bytes()).hexdigest()
+    files[str(p)]=info
+    return str(p)
+for e in old:
+    track(e['fastq_1']);track(e['fastq_2'])
+source=old_metadata if Path(old_metadata).is_file() and Path(old_metadata).stat().st_size else xlsx
+track(source,True)
+pools=[];poolnames=set()
+for path in paths:
+    track(path,True)
+    if not path.name.endswith('_demux.tsv'):
+        raise SystemExit('Nom attendu *_demux.tsv : '+str(path))
+    pool=path.name[:-len('_demux.tsv')]
+    if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*',pool) or pool in poolnames:
+        raise SystemExit('Nom de pool invalide ou duplique : '+pool)
+    poolnames.add(pool)
+    a=track(path.with_name(pool+'_R1.fastq.gz'));b=track(path.with_name(pool+'_R2.fastq.gz'))
+    entries=[];pairs=set()
+    with path.open(newline='',encoding='utf-8-sig') as h:
+        for line,row in enumerate(csv.reader(h,delimiter='\t'),1):
+            if not row or not any(row) or row[0].startswith('#'):continue
+            if len(row)<5:raise SystemExit(f'{path}:{line} : au moins 5 colonnes attendues')
+            p,name,tags,pf,pr=[v.strip() for v in row[:5]]
+            if p!=pool:raise SystemExit(f'{path}:{line} : pool incorrect {p!r}')
+            if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*',name):raise SystemExit(f'Nom invalide {name!r} dans {path}:{line}')
+            if name in used:raise SystemExit(f'Echantillon duplique {name}: {used[name]} ET {path}:{line}. Ne pas melanger des marqueurs distincts.')
+            used[name]=f'{path}:{line}'
+            if (pf.upper(),pr.upper())!=(f,r):raise SystemExit(f'{path}:{line}: amorces incompatibles. Ce script analyse uniquement le marqueur configure, pas EukaB.')
+            t=tags.upper().split(':')
+            if len(t)!=2 or any(not re.fullmatch('[ACGT]+',x) for x in t):raise SystemExit(f'{path}:{line}: tags invalides {tags!r}')
+            if tuple(t) in pairs:raise SystemExit(f'{path}:{line}: couple de tags duplique {tags}')
+            pairs.add(tuple(t))
+            entries.append(dict(sample=name,tag_f=t[0],tag_r=t[1],included=os.environ['KEEP_MEGA_CONTROLS']=='1' or name.upper().startswith('MEGA')))
+    if not entries:raise SystemExit('Aucun echantillon dans '+str(path)+' : fichier vide/commentaires seulement ?')
+    pools.append(dict(pool=pool,mapping=str(path),r1=a,r2=b,entries=entries))
+    print('TSV selectionne :',path,';',len(entries),'echantillons',flush=True)
+settings={k:os.environ[k] for k in ['FORWARD_PRIMER','REVERSE_PRIMER','TRUNC_LEN_F','TRUNC_LEN_R','MAX_EE','TRUNC_QMIN','TRUNC_RMIN','SILVA_REF','NFCORE_VERSION','PROFILE','AMPLISEQ_REPO','KEEP_MEGA_CONTROLS','DEMUX_MAX_OFFSET','DEMUX_PRIMER_ERRORS','DEMUX_MIN_FRACTION']}
+plan={'pools':pools,'forward_primer':f,'reverse_primer':r,'max_offset':int(settings['DEMUX_MAX_OFFSET']),'primer_errors':int(settings['DEMUX_PRIMER_ERRORS']),'min_fraction':float(settings['DEMUX_MIN_FRACTION'])}
+if not 0<=plan['max_offset']<=100 or not 0<=plan['primer_errors']<=4 or not 0<plan['min_fraction']<=1:
+    raise SystemExit('Parametres de demultiplexage invalides')
+for k in ['TRUNC_LEN_F','TRUNC_LEN_R','MAX_EE']:
+    if int(settings[k])<0:raise SystemExit('Parametre negatif '+k)
+if int(os.environ.get('PR2_THREADS','8'))<1:raise SystemExit('PR2_THREADS doit etre >=1')
+if (f,r)!=('GTGYCAGCMGCCGCGGTAA','CCGYCAATTYMTTTRAGTTT'):
+    raise SystemExit('Version reservee au marqueur Bact04 515F/926R')
+if settings['NFCORE_VERSION']!='2.18.0' or settings['SILVA_REF']!='silva=138.2' or settings['PROFILE']!='singularity':
+    raise SystemExit('Version testee/configuree : ampliseq 2.18.0, SILVA 138.2, profil singularity')
+record={'settings':settings,'files':files,'old_records':old,'plan':plan,'script_sha256':hashlib.sha256(Path(script_path).read_bytes()).hexdigest()}
+signature=hashlib.sha256(json.dumps(record,sort_keys=True).encode()).hexdigest()
+sp=Path(signature_path)
+if sp.exists() and sp.read_text().strip()!=signature:
+    raise SystemExit('Entrees, script ou parametres modifies depuis le premier lancement. Choisir un NOUVEAU JEDI_DIR pour ne pas reutiliser des resultats perimes.')
+Path(plan_path).write_text(json.dumps(plan,indent=2)+'\n')
+if not sp.exists():
+    sp.write_text(signature+'\n')
+    sp.with_suffix('.json').write_text(json.dumps(record,indent=2)+'\n')
+print('Preflight OK :',len(old),'anciens +',sum(len(p['entries']) for p in pools),'nouveaux identifiants.',flush=True)
+PY_PLAN
   cat > "${INPUT_DIR}/demultiplex_mega.py" <<'PY_DEMUX'
-import csv, gzip, os, re, sys, json
+import csv, gzip, json, os, re, shutil, sys
 from pathlib import Path
 from collections import Counter, OrderedDict
-from contextlib import ExitStack
+from itertools import zip_longest
 
-root, out, sheet, inventory = map(Path, sys.argv[1:5])
-max_offset = int(os.environ.get('DEMUX_MAX_OFFSET', '12'))
-primer_errors = int(os.environ.get('DEMUX_PRIMER_ERRORS', '2'))
-min_fraction = float(os.environ.get('DEMUX_MIN_FRACTION', '0.01'))
-keep_controls = os.environ.get('KEEP_MEGA_CONTROLS', '1') == '1'
-if not 0 <= max_offset <= 100 or not 0 <= primer_errors <= 4 or not 0 < min_fraction <= 1:
-    raise SystemExit('Parametres DEMUX invalides')
-iupac = {'A':'A','C':'C','G':'G','T':'T','R':'AG','Y':'CT','S':'GC','W':'AT','K':'GT','M':'AC','B':'CGT','D':'AGT','H':'ACT','V':'ACG','N':'ACGT'}
-expected_f = os.environ['FORWARD_PRIMER'].upper()
-expected_r = os.environ['REVERSE_PRIMER'].upper()
-
+plan_path, destination = map(Path, sys.argv[1:3])
+plan=json.loads(plan_path.read_text())
+out=destination
+if (out/'DEMULTIPLEX_SUCCESS.json').is_file():
+    saved=json.loads((out/'DEMULTIPLEX_SUCCESS.json').read_text())
+    for name, size in saved['files'].items():
+        p=out/name
+        if not p.is_file() or p.stat().st_size!=size:
+            raise SystemExit('Cache demultiplexage incomplet/modifie : '+str(p))
+    print('Demultiplexage deja termine : reutilisation de '+str(out),flush=True)
+    sys.exit(0)
+if out.exists():
+    raise SystemExit('Dossier demultiplexage sans marqueur valide : '+str(out))
+work=out.with_name(out.name+'.partial')
+if work.exists():
+    shutil.rmtree(work)
+work.mkdir(parents=True)
+f=plan['forward_primer']; r=plan['reverse_primer']
+max_offset=plan['max_offset']; errors=plan['primer_errors']; minimum=plan['min_fraction']
+iupac={'A':'A','C':'C','G':'G','T':'T','R':'AG','Y':'CT','M':'AC','K':'GT','S':'CG','W':'AT','B':'CGT','D':'AGT','H':'ACT','V':'ACG','N':'ACGT'}
 def primer_ok(seq, primer):
-    return len(seq) >= len(primer) and sum(base not in iupac[p] for base,p in zip(seq,primer)) <= primer_errors
+    if len(seq)<len(primer): return False
+    mismatches=0
+    for base,p in zip(seq,primer):
+        if base not in iupac[p]:
+            mismatches+=1
+            if mismatches>errors: return False
+    return True
 
-def readfq(handle):
+def readfq(h):
     while True:
-        h = handle.readline()
-        if not h:
-            return
-        seq, plus, qual = handle.readline(), handle.readline(), handle.readline()
-        if not h.startswith('@') or not plus.startswith('+') or not qual or len(seq.rstrip()) != len(qual.rstrip()):
-            raise ValueError('FASTQ malforme ou tronque : '+h[:100])
-        yield h, seq.rstrip('\r\n'), plus, qual.rstrip('\r\n')
+        header=h.readline()
+        if not header: return
+        seq=h.readline().rstrip('\r\n');plus=h.readline();qual=h.readline().rstrip('\r\n')
+        if not header.startswith('@') or not plus.startswith('+') or not seq or len(seq)!=len(qual):
+            raise ValueError('FASTQ invalide : '+header[:100])
+        yield header,seq,qual
 
-def read_id(h):
-    return re.sub(r'/[12]$', '', h.split()[0])
+def readid(header):
+    return re.sub(r'/[12]$','',header.split()[0])
 
 def pairs(a,b):
-    from itertools import zip_longest
-    with gzip.open(a,'rt') as x, gzip.open(b,'rt') as y:
-        for n,(r1,r2) in enumerate(zip_longest(readfq(x),readfq(y)),1):
-            if r1 is None or r2 is None or read_id(r1[0]) != read_id(r2[0]):
+    with gzip.open(a,'rt') as x,gzip.open(b,'rt') as y:
+        for n,(u,v) in enumerate(zip_longest(readfq(x),readfq(y)),1):
+            if u is None or v is None or readid(u[0])!=readid(v[0]):
                 raise ValueError('Paires desynchronisees a la paire '+str(n))
-            yield r1,r2
+            yield u,v
 
-out.mkdir(parents=True, exist_ok=True)
-maps = sorted(root.rglob('MEGA_*_demux.tsv'))
-if not maps:
-    raise SystemExit('Aucun MEGA_*_demux.tsv dans '+str(root))
-all_names=set()
-records=[]
-report=[]
-for mapping in maps:
-    pool=mapping.name[:-len('_demux.tsv')]
-    a=mapping.with_name(pool+'_R1.fastq.gz')
-    b=mapping.with_name(pool+'_R2.fastq.gz')
-    if not a.is_file() or not b.is_file():
-        raise SystemExit('Paire FASTQ absente pour '+pool)
-    lookup={}
-    entries=[]
-    for line,row in enumerate(csv.reader(open(mapping),delimiter='\t'),1):
-        if not row or not any(row) or row[0].startswith('#'):
-            continue
-        if len(row)<5 or row[0]!=pool:
-            raise SystemExit(f'{mapping}:{line}: format inattendu (TSV sans en-tete attendu)')
-        _,name,tags,f,r=row[:5]
-        if not re.fullmatch('[A-Za-z][A-Za-z0-9_]*',name) or name in all_names:
-            raise SystemExit('Nom invalide ou duplique : '+name)
-        all_names.add(name)
-        t=tags.upper().split(':')
-        if len(t)!=2 or any(not re.fullmatch('[ACGT]+',v) for v in t):
-            raise SystemExit('Tags invalides : '+tags)
-        if (f.upper(),r.upper()) != (expected_f,expected_r):
-            raise SystemExit('Amorces incompatibles dans '+str(mapping))
-        if tuple(t) in lookup:
-            raise SystemExit('Double tag duplique : '+tags)
-        lookup[tuple(t)]=name
-        entries.append((name,tuple(t),keep_controls or name.upper().startswith('MEGA')))
-    lengths={(len(t[0]),len(t[1])) for _,t,_ in entries}
-    if len(lengths)!=1:
-        raise SystemExit('Longueurs de tags heterogenes non prises en charge dans '+str(mapping))
-    lf,lr=next(iter(lengths))
-    ftags={t[0] for t in lookup}; rtags={t[1] for t in lookup}
-    def ends(rec,tags,length,primer):
-        seq=rec[1].upper()
-        result=[]
-        for offset in range(max_offset+1):
-            tag=seq[offset:offset+length]
-            if tag in tags and primer_ok(seq[offset+length:],primer):
-                result.append((tag,offset+length))
-        return result
-    def assign(r1,r2):
+inventory=[]; summaries=[]
+for pool in plan['pools']:
+    name=pool['pool']; entries=pool['entries']
+    lookup={(e['tag_f'],e['tag_r']):e['sample'] for e in entries}
+    forward={}
+    reverse={}
+    for tf,tr in lookup:
+        forward.setdefault(len(tf),set()).add(tf)
+        reverse.setdefault(len(tr),set()).add(tr)
+    def ends(rec, tags_by_length, primer):
+        seq=rec[1].upper();hits=[]
+        for length,tags in tags_by_length.items():
+            for offset in range(max_offset+1):
+                tag=seq[offset:offset+length]
+                if tag in tags and primer_ok(seq[offset+length:],primer):
+                    hits.append((tag,offset+length))
+        return hits
+    def assign(a,b):
         matches=set()
-        for swapped,x,y in ((False,r1,r2),(True,r2,r1)):
-            for tf,pf in ends(x,ftags,lf,expected_f):
-                for tr,pr in ends(y,rtags,lr,expected_r):
-                    name=lookup.get((tf,tr))
-                    if name:
-                        matches.add((name,swapped,pf,pr))
+        for swapped,x,y in ((False,a,b),(True,b,a)):
+            for tf,pf in ends(x,forward,f):
+                for tr,pr in ends(y,reverse,r):
+                    sample=lookup.get((tf,tr))
+                    if sample: matches.add((sample,swapped,pf,pr))
         return matches
     pilot=Counter()
-    for n,(r1,r2) in enumerate(pairs(a,b),1):
-        m=assign(r1,r2)
-        pilot['total']+=1
-        pilot['unique' if len(m)==1 else 'ambiguous' if m else 'unassigned']+=1
-        if n>=50000:
-            break
-    if not pilot['total'] or pilot['unique']/pilot['total'] < min_fraction:
-        raise SystemExit(f'{pool}: structure tag+amorce non confirmee : {dict(pilot)}. '
-                         'Ne pas poursuivre sans inspecter les reads (tags absents, complements inverses ou index separes possibles).')
-    print(pool, 'controle initial',dict(pilot),flush=True)
-    dest=out/pool; dest.mkdir()
-    selected={name for name,t,keep in entries if keep}
-    counts=Counter(); stats=Counter()
-    handles=OrderedDict()
-    def output_pair(name):
-        if name in handles:
-            handles.move_to_end(name)
-            return handles[name]
+    for n,(a,b) in enumerate(pairs(pool['r1'],pool['r2']),1):
+        hits=assign(a,b);pilot['total']+=1
+        pilot['unique' if len(hits)==1 else 'ambiguous' if hits else 'unassigned']+=1
+        if n>=50000: break
+    print(name,'controle initial',dict(pilot),flush=True)
+    if not pilot['total'] or pilot['unique']/pilot['total']<minimum:
+        raise SystemExit('Structure tag+amorce non confirmee pour '+name+'. Inspecter les FASTQ avant de changer les seuils.')
+    folder=work/name;folder.mkdir()
+    handles=OrderedDict();counts=Counter();stats=Counter()
+    selected={e['sample'] for e in entries if e['included']}
+    def output_handles(sample):
+        if sample in handles:
+            handles.move_to_end(sample);return handles[sample]
         if len(handles)>=64:
             _,old=handles.popitem(last=False)
-            for h in old: h.close()
-        hs=tuple(gzip.open(dest/(name+f'_R{i}.fastq.gz'),'at',compresslevel=3) for i in (1,2))
-        handles[name]=hs
+            for h in old:h.close()
+        hs=tuple(gzip.open(folder/(sample+f'_R{i}.fastq.gz'),'at',compresslevel=3) for i in (1,2))
+        handles[sample]=hs
         return hs
-    unknown1=gzip.open(dest/'unassigned_R1.fastq.gz','wt',compresslevel=3)
-    unknown2=gzip.open(dest/'unassigned_R2.fastq.gz','wt',compresslevel=3)
-    try:
-        for r1,r2 in pairs(a,b):
-            stats['total']+=1
-            matches=assign(r1,r2)
-            if len(matches)!=1:
-                stats['ambiguous' if matches else 'unassigned']+=1
-                for h,rec in ((unknown1,r1),(unknown2,r2)):
-                    h.write(rec[0]+rec[1]+'\n+\n'+rec[3]+'\n')
-                continue
-            name,swapped,pf,pr=next(iter(matches))
-            stats['assigned']+=1
-            if name not in selected:
-                stats['excluded_controls']+=1
-                continue
-            x,y=(r2,r1) if swapped else (r1,r2)
-            hs=output_pair(name)
-            for i,(h,rec,cut) in enumerate(zip(hs,(x,y),(pf,pr)),1):
-                h.write(read_id(rec[0])+f'/{i}\n'+rec[1][cut:]+'\n+\n'+rec[3][cut:]+'\n')
-            counts[name]+=1
-            stats['written']+=1
-            stats['swapped']+=int(swapped)
-    finally:
-        unknown1.close();unknown2.close()
-        for hs in handles.values():
-            for h in hs: h.close()
-    if stats['assigned']/max(1,stats['total']) < min_fraction:
-        raise SystemExit('Taux global de demultiplexage insuffisant pour '+pool)
-    for name,t,keep in entries:
-        records.append([name,pool,':'.join(t),int(keep),counts[name],
-                        str(dest/(name+'_R1.fastq.gz')) if counts[name] else '',
-                        str(dest/(name+'_R2.fastq.gz')) if counts[name] else ''])
-    report.append(dict(pool=pool,mapping=str(mapping),r1=str(a),r2=str(b),pilot=dict(pilot),counts=dict(stats)))
-    print(pool, 'resultat',dict(stats),flush=True)
-with open(sheet,'w',newline='') as h:
-    w=csv.writer(h,delimiter='\t');w.writerow(['sample','fastq_1','fastq_2'])
-    for name,pool,t,keep,n,r1,r2 in records:
-        if keep and n: w.writerow([name,r1,r2])
-with open(inventory,'w',newline='') as h:
-    w=csv.writer(h,delimiter='\t');w.writerow(['sample','pool','tags','included','read_pairs','fastq_1','fastq_2']);w.writerows(records)
-with open(out/'demultiplex_summary.json','w') as h:
-    json.dump(report,h,indent=2)
+    with gzip.open(folder/'unassigned_R1.fastq.gz','wt',compresslevel=3) as u1, gzip.open(folder/'unassigned_R2.fastq.gz','wt',compresslevel=3) as u2:
+        try:
+            for a,b in pairs(pool['r1'],pool['r2']):
+                stats['total']+=1;hits=assign(a,b)
+                if len(hits)!=1:
+                    stats['ambiguous' if hits else 'unassigned']+=1
+                    for h,rec in ((u1,a),(u2,b)):
+                        h.write(rec[0]+rec[1]+'\n+\n'+rec[2]+'\n')
+                    continue
+                sample,swapped,pf,pr=next(iter(hits))
+                stats['assigned']+=1;counts[sample]+=1
+                if sample not in selected:
+                    stats['excluded_controls']+=1;continue
+                x,y=(b,a) if swapped else (a,b)
+                for i,(h,rec,cut) in enumerate(zip(output_handles(sample),(x,y),(pf,pr)),1):
+                    h.write(readid(rec[0])+f'/{i}\n'+rec[1][cut:]+'\n+\n'+rec[2][cut:]+'\n')
+                stats['written']+=1;stats['swapped']+=int(swapped)
+                if stats['total']%1000000==0:print(name,dict(stats),flush=True)
+        finally:
+            for hs in handles.values():
+                for h in hs:h.close()
+    if stats['assigned']/max(1,stats['total'])<minimum:
+        raise SystemExit('Taux global de demultiplexage insuffisant pour '+name)
+    print(name,'resultat',dict(stats),flush=True)
+    for e in entries:
+        sample=e['sample'];n=counts[sample]
+        inventory.append(dict(sample=sample,pool=name,tags=e['tag_f']+':'+e['tag_r'],included=int(e['included']),read_pairs=n,
+                              fastq_1=str(out/name/(sample+'_R1.fastq.gz')) if n and e['included'] else '',
+                              fastq_2=str(out/name/(sample+'_R2.fastq.gz')) if n and e['included'] else ''))
+    summaries.append(dict(pool=name,pilot=dict(pilot),counts=dict(stats)))
+with (work/'mega_inventory.tsv').open('w',newline='') as h:
+    writer=csv.DictWriter(h,fieldnames=['sample','pool','tags','included','read_pairs','fastq_1','fastq_2'],delimiter='\t')
+    writer.writeheader();writer.writerows(inventory)
+(work/'demultiplex_summary.json').write_text(json.dumps(summaries,indent=2)+'\n')
+files={str(p.relative_to(work)):p.stat().st_size for p in work.rglob('*') if p.is_file()}
+(work/'DEMULTIPLEX_SUCCESS.json').write_text(json.dumps({'files':files},indent=2)+'\n')
+os.replace(work,out)
 PY_DEMUX
-  "${PYTHON_BIN}" "${INPUT_DIR}/demultiplex_mega.py" \
-    "${TRANSECTS_DIR}" "${DEMUX_DIR}" "${MEGA_SAMPLESHEET}" "${MEGA_INVENTORY}"
 }
 
-append_mega_samples() {
-  "${PYTHON_BIN}" - "${SAMPLESHEET}" "${SAMPLESHEET_DEBUG}" "${MEGA_SAMPLESHEET}" "${MEGA_INVENTORY}" <<'PY_APPEND'
-import csv, sys
-sheet, debug, mega, inventory = sys.argv[1:]
+preflight_inputs() {
+  export FORWARD_PRIMER REVERSE_PRIMER TRUNC_LEN_F TRUNC_LEN_R MAX_EE TRUNC_QMIN TRUNC_RMIN
+  export SILVA_REF NFCORE_VERSION PROFILE AMPLISEQ_REPO
+  [[ "${KEEP_MEGA_CONTROLS}" == 0 || "${KEEP_MEGA_CONTROLS}" == 1 ]] || die "KEEP_MEGA_CONTROLS doit valoir 0 ou 1"
+  "${PYTHON_BIN}" "${INPUT_DIR}/plan_inputs.py" \
+    "${INPUT_DIR}/samplesheet_old.tsv" "${OLD_SAMPLES_TSV}" "${XLSX_METADATA}" \
+    "${MEGA_DEMUX_TSV}" "${RAW_DIR}" "${PLAN_JSON}" "${SIGNATURE_FILE}" "${SELF_PATH}"
+}
+
+demultiplex_mega() {
+  log "Demultiplexage : uniquement les TSV selectionnes dans ${PLAN_JSON}"
+  "${PYTHON_BIN}" "${INPUT_DIR}/demultiplex_mega.py" "${PLAN_JSON}" "${DEMUX_DIR}"
+}
+
+combine_samplesheets() {
+  "${PYTHON_BIN}" - "${INPUT_DIR}/samplesheet_old.tsv" "${MEGA_INVENTORY}" "${SAMPLESHEET}" "${SAMPLESHEET_DEBUG}" "${INPUT_DIR}/sample_inventory.tsv" <<'PY_COMBINE'
+import csv, io, sys
+from pathlib import Path
+old_path, mega_path, sheet, debug, inventory = sys.argv[1:]
 def load(p):
-    with open(p) as h: return list(csv.DictReader(h, delimiter='\t'))
-old, new, inv = load(sheet), load(mega), load(inventory)
-ids={r['sample'] for r in old}
-collision=ids & {r['sample'] for r in inv}
-if collision: raise SystemExit('Collision entre anciens et nouveaux noms : '+str(sorted(collision)))
-for p,fields,rows in ((sheet,['sample','fastq_1','fastq_2'],old+new),
-                      (debug,['sample','fastq_1','fastq_2','source'],load(debug)+[dict(r,source='MEGA_demultiplexed') for r in new])):
-    with open(p,'w',newline='') as h:
-        w=csv.DictWriter(h,fieldnames=fields,delimiter='\t');w.writeheader();w.writerows(rows)
-print('Samplesheet commun :',len(old),'anciens +',len(new),'nouveaux avec reads.')
-PY_APPEND
+    with open(p) as h:return list(csv.DictReader(h,delimiter='\t'))
+def save(p,fields,rows):
+    buf=io.StringIO(newline='')
+    w=csv.DictWriter(buf,fieldnames=fields,delimiter='\t',lineterminator='\n');w.writeheader();w.writerows(rows)
+    p=Path(p);text=buf.getvalue()
+    if not p.exists() or p.read_text()!=text:p.write_text(text)
+old=load(old_path);mega=load(mega_path)
+records=[];inv=[];seen=set()
+for e in old:
+    sample=e['sample']
+    if sample in seen:raise SystemExit('ID duplique : '+sample)
+    seen.add(sample)
+    records.append(dict(e,source='old_metadata'))
+    inv.append(dict(sample=sample,source='old',pool='',read_pairs_demux='',fastq_1=e['fastq_1'],fastq_2=e['fastq_2']))
+for e in mega:
+    if e['included']!='1':continue
+    sample=e['sample']
+    if sample in seen:raise SystemExit('Collision anciens/MEGA : '+sample)
+    seen.add(sample)
+    inv.append(dict(sample=sample,source='MEGA',pool=e['pool'],read_pairs_demux=e['read_pairs'],fastq_1=e['fastq_1'],fastq_2=e['fastq_2']))
+    if int(e['read_pairs'])>0:
+        records.append(dict(sample=sample,fastq_1=e['fastq_1'],fastq_2=e['fastq_2'],source=e['pool']))
+if not records:raise SystemExit('Aucun echantillon exploitable')
+save(sheet,['sample','fastq_1','fastq_2'],[{k:e[k] for k in ['sample','fastq_1','fastq_2']} for e in records])
+save(debug,['sample','fastq_1','fastq_2','source'],records)
+save(inventory,['sample','source','pool','read_pairs_demux','fastq_1','fastq_2'],inv)
+print('Samplesheet commun :',len(old),'anciens +',len(records)-len(old),'MEGA avec reads ;',len(inv),'identifiants au total.')
+PY_COMBINE
 }
 
 build_samplesheet() {
@@ -733,6 +793,11 @@ trunc_rmin: ${TRUNC_RMIN}
 max_ee: ${MAX_EE}
 min_len: 50
 
+min_read_counts: 1
+ignore_empty_input_files: true
+ignore_failed_trimming: true
+ignore_failed_filtering: true
+
 single_end: false
 multiple_sequencing_runs: false
 sample_inference: "independent"
@@ -783,6 +848,7 @@ run_nfcore() {
 }
 
 has_silva_success() {
+  [[ -s "${SILVA_DIR}/SILVA_SUCCESS.txt" ]] && \
   [[ -s "${SILVA_ASV_FASTA}" ]] \
     && [[ -s "${SILVA_ASV_TABLE}" ]] \
     && [[ -s "${SILVA_TAXONOMY}" ]]
@@ -805,6 +871,7 @@ run_silva_pipeline() {
   [[ -s "${SILVA_ASV_FASTA}" ]] || die "FASTA ASV SILVA absent : ${SILVA_ASV_FASTA}"
   [[ -s "${SILVA_ASV_TABLE}" ]] || die "Table ASV SILVA absente : ${SILVA_ASV_TABLE}"
   [[ -s "${SILVA_TAXONOMY}" ]] || die "Taxonomie SILVA absente : ${SILVA_TAXONOMY}"
+  printf 'SUCCESS\n' > "${SILVA_DIR}/SILVA_SUCCESS.txt"
 }
 
 download_pr2_reference() {
@@ -859,7 +926,7 @@ read_fasta_named <- function(path) {
 seqs <- read_fasta_named(asv_fasta)
 message("Classification PR2 de ", length(seqs), " ASV")
 
-set.seed(1)
+set.seed(100)
 tax <- assignTaxonomy(
   seqs = unname(seqs),
   refFasta = pr2_fasta,
@@ -867,7 +934,7 @@ tax <- assignTaxonomy(
   minBoot = 50,
   tryRC = TRUE,
   outputBootstraps = FALSE,
-  multithread = TRUE
+  multithread = as.integer(Sys.getenv("PR2_THREADS", "8"))
 )
 
 tax <- as.data.frame(tax, stringsAsFactors = FALSE, check.names = FALSE)
@@ -906,13 +973,14 @@ tax <- tax[, rank_order, drop = FALSE]
 
 write.table(
   tax,
-  file = out_tsv,
+  file = paste0(out_tsv, ".part"),
   sep = "\t",
   quote = FALSE,
   row.names = FALSE,
   col.names = TRUE,
   na = ""
 )
+if (!file.rename(paste0(out_tsv, ".part"), out_tsv)) stop("Cannot finalize PR2 table")
 RSCRIPT
 }
 
@@ -935,46 +1003,28 @@ find_dada2_container() {
 }
 
 run_pr2_classifier() {
-  local conda_base=""
-  local env_name=""
-  local dada2_image=""
-
-  if command -v conda >/dev/null 2>&1; then
-    conda_base="$(conda info --base 2>/dev/null || true)"
-    if [[ -n "${conda_base}" && -f "${conda_base}/etc/profile.d/conda.sh" ]]; then
-      # shellcheck disable=SC1090
-      source "${conda_base}/etc/profile.d/conda.sh"
-      for env_name in ${PR2_CONDA_ENV_CANDIDATES}; do
-        if conda activate "${env_name}" >/dev/null 2>&1 \
-          && command -v "${R_BIN}" >/dev/null 2>&1 \
-          && "${R_BIN}" --vanilla -e 'suppressPackageStartupMessages(library(dada2))' >/dev/null 2>&1; then
-          log "Environnement R/dada2 activé pour PR2 : ${env_name}"
-          "${R_BIN}" --vanilla "${PR2_R_SCRIPT}" \
-            "${SILVA_ASV_FASTA}" "${PR2_REFERENCE_FASTA}" "${PR2_TAXONOMY_TSV}"
-          return 0
-        fi
-      done
-    fi
-  fi
-
-  if command -v "${R_BIN}" >/dev/null 2>&1 \
-    && "${R_BIN}" --vanilla -e 'suppressPackageStartupMessages(library(dada2))' >/dev/null 2>&1; then
-    log "Utilisation du R/dada2 courant pour PR2"
-    "${R_BIN}" --vanilla "${PR2_R_SCRIPT}" \
-      "${SILVA_ASV_FASTA}" "${PR2_REFERENCE_FASTA}" "${PR2_TAXONOMY_TSV}"
-    return 0
-  fi
-
+  local dada2_image env_name
   dada2_image="$(find_dada2_container || true)"
   if [[ -n "${dada2_image}" ]]; then
-    log "Utilisation du conteneur DADA2 nf-core pour PR2 : ${dada2_image}"
-    singularity exec --bind "${PROJECT_ROOT}:${PROJECT_ROOT}" "${dada2_image}" \
-      Rscript --vanilla "${PR2_R_SCRIPT}" \
-      "${SILVA_ASV_FASTA}" "${PR2_REFERENCE_FASTA}" "${PR2_TAXONOMY_TSV}"
+    log "PR2 : conteneur DADA2 de cette analyse : ${dada2_image}"
+    singularity exec --env "PR2_THREADS=${PR2_THREADS}" --bind "${PROJECT_ROOT}:${PROJECT_ROOT}" --bind "${JEDI_DIR}:${JEDI_DIR}" "${dada2_image}" \
+      Rscript --vanilla "${PR2_R_SCRIPT}" "${SILVA_ASV_FASTA}" "${PR2_REFERENCE_FASTA}" "${PR2_TAXONOMY_TSV}"
     return 0
   fi
-
-  die "Aucun environnement R/dada2 utilisable pour la classification PR2"
+  if command -v "${R_BIN}" >/dev/null 2>&1 && "${R_BIN}" --vanilla -e 'library(dada2)' >/dev/null 2>&1; then
+    "${R_BIN}" --vanilla "${PR2_R_SCRIPT}" "${SILVA_ASV_FASTA}" "${PR2_REFERENCE_FASTA}" "${PR2_TAXONOMY_TSV}"
+    return 0
+  fi
+  if command -v conda >/dev/null 2>&1; then
+    for env_name in ${PR2_CONDA_ENV_CANDIDATES}; do
+      if conda run -n "${env_name}" Rscript --vanilla -e 'library(dada2)' >/dev/null 2>&1; then
+        conda run --no-capture-output -n "${env_name}" Rscript --vanilla "${PR2_R_SCRIPT}" \
+          "${SILVA_ASV_FASTA}" "${PR2_REFERENCE_FASTA}" "${PR2_TAXONOMY_TSV}"
+        return 0
+      fi
+    done
+  fi
+  die "Aucun environnement R/dada2 pour PR2 ; conteneur nf-core introuvable."
 }
 
 classify_pr2_from_silva_asvs() {
@@ -986,7 +1036,7 @@ classify_pr2_from_silva_asvs() {
     rm -f "${PR2_TAXONOMY_TSV}" "${PR2_R_SCRIPT}"
   fi
 
-  if [[ -s "${PR2_TAXONOMY_TSV}" ]]; then
+  if [[ -s "${PR2_TAXONOMY_TSV}" && -s "${PR2_DIR}/PR2_SUCCESS.txt" ]]; then
     log "ÉTAPE 2/3 PR2 déjà disponible, réutilisation"
     return 0
   fi
@@ -998,6 +1048,7 @@ classify_pr2_from_silva_asvs() {
   run_pr2_classifier
   [[ -s "${PR2_TAXONOMY_TSV}" ]] || die \
     "Taxonomie PR2 non produite : ${PR2_TAXONOMY_TSV}"
+  printf 'SUCCESS\n' > "${PR2_DIR}/PR2_SUCCESS.txt"
 }
 
 integrate_outputs() {
@@ -1015,8 +1066,7 @@ integrate_outputs() {
 
   mkdir -p "${INTEGRATED_DIR}/tables_by_domain"
 
-  SAMPLESHEET="${SAMPLESHEET}" \
-  MEGA_INVENTORY="${MEGA_INVENTORY}" \
+  SAMPLE_INVENTORY="${INPUT_DIR}/sample_inventory.tsv" \
   SILVA_TABLE="${SILVA_ASV_TABLE}" \
   SILVA_ASV="${SILVA_ASV_FASTA}" \
   SILVA_TAX="${SILVA_TAXONOMY}" \
@@ -1135,32 +1185,29 @@ def parse_taxonomy(path):
 
 
 def parse_count_table(path):
+    with open(path) as handle:first=handle.readline()
+    delimiter=sniff_delimiter(first)
+    counts=OrderedDict()
     with open(path) as handle:
-        first = handle.readline()
-    delimiter = sniff_delimiter(first)
-    counts = OrderedDict()
-    with open(path) as handle:
-        reader = csv.reader(handle, delimiter=delimiter)
-        header = next(reader)
-        samples = [x.strip() for x in header[1:]]
-        if not samples:
-            raise SystemExit('Aucun échantillon dans {}'.format(path))
-        for row in reader:
-            if not row:
-                continue
-            asv = row[0].strip()
-            if not asv:
-                continue
-            values = []
-            for value in row[1:1 + len(samples)]:
-                value = value.strip()
-                values.append(int(float(value)) if value not in ('', 'NA', 'nan') else 0)
-            if len(values) < len(samples):
-                values.extend([0] * (len(samples) - len(values)))
-            counts[asv] = dict(zip(samples, values))
-    if not counts:
-        raise SystemExit('Aucun ASV dans {}'.format(path))
-    return samples, counts
+        reader=csv.reader(handle,delimiter=delimiter)
+        header=next(reader)
+        samples=[x.strip() for x in header[1:]]
+        if not samples or len(samples)!=len(set(samples)) or any(not x for x in samples):
+            raise SystemExit('Colonnes echantillons absentes/dupliquees dans '+path)
+        for line,row in enumerate(reader,2):
+            if not row:continue
+            if len(row)!=len(header):raise SystemExit('Nombre de colonnes incorrect dans '+path+':'+str(line))
+            asv=row[0].strip()
+            if not asv or asv in counts:raise SystemExit('ASV vide/duplique dans '+path)
+            values=[]
+            for value in row[1:]:
+                number=float(value)
+                if not math.isfinite(number) or number<0 or not number.is_integer():
+                    raise SystemExit('Abondance non entiere/non positive dans '+path)
+                values.append(int(number))
+            counts[asv]=dict(zip(samples,values))
+    if not counts:raise SystemExit('Aucun ASV dans '+path)
+    return samples,counts
 
 
 def canonical_domain(value):
@@ -1201,29 +1248,29 @@ sequences = parse_fasta(silva_asv)
 silva_tax = parse_taxonomy(silva_tax_path)
 pr2_tax = parse_taxonomy(pr2_tax_path)
 samples, counts = parse_count_table(silva_table)
-with open(os.environ['SAMPLESHEET']) as h:
-    expected = [r['sample'] for r in csv.DictReader(h, delimiter='\t')]
-with open(os.environ['MEGA_INVENTORY']) as h:
-    mega_inventory = list(csv.DictReader(h, delimiter='\t'))
-expected += [r['sample'] for r in mega_inventory if r['included']=='1' and r['sample'] not in expected]
-unexpected = set(samples)-set(expected)
-if unexpected:
-    raise SystemExit('Noms inattendus dans la table ASV : '+str(sorted(unexpected)))
-original_samples = set(samples)
+
+with open(os.environ['SAMPLE_INVENTORY']) as h:
+    inventory=list(csv.DictReader(h,delimiter='\t'))
+expected=[e['sample'] for e in inventory]
+if len(expected)!=len(set(expected)):raise SystemExit('Noms dupliques dans inventaire')
+if set(samples)-set(expected):raise SystemExit('Echantillons inattendus dans ASV_table : '+str(set(samples)-set(expected)))
+original_samples=set(samples)
 for sample in expected:
     if sample not in original_samples:
-        for row in counts.values(): row[sample]=0
-samples = expected
-with open(os.path.join(integrated_dir,'sample_processing_status.tsv'),'w',newline='') as h:
-    writer=csv.writer(h,delimiter='\t');writer.writerow(['sample','in_ASV_output','final_reads','status'])
-    zero_demux={r['sample'] for r in mega_inventory if int(r['read_pairs'])==0}
-    for sample in samples:
-        total=sum(row[sample] for row in counts.values())
-        status='retained' if total else 'no_demultiplexed_reads' if sample in zero_demux else 'no_ASVs_retained'
-        writer.writerow([sample,int(sample in original_samples),total,status])
-for label, mapping in [('FASTA', sequences),('SILVA', silva_tax),('PR2',pr2_tax)]:
+        for values in counts.values():values[sample]=0
+samples=expected
+for label,mapping in [('FASTA',sequences),('SILVA',silva_tax),('PR2',pr2_tax)]:
     missing=set(counts)-set(mapping)
-    if missing: raise SystemExit('Identifiants ASV manquants dans '+label+': '+str(sorted(missing)[:10]))
+    if missing:raise SystemExit('Identifiants ASV manquants dans '+label+': '+str(sorted(missing)[:10]))
+if not any(sum(values.values())>0 for values in counts.values()):
+    raise SystemExit('Aucun read final retenu : impossible de produire une analyse biologique')
+with open(os.path.join(integrated_dir,'sample_processing_status.tsv'),'w',newline='') as h:
+    writer=csv.writer(h,delimiter='\t')
+    writer.writerow(['sample','source','pool','read_pairs_demultiplexed','present_in_nfcore_ASV_table','final_reads','status'])
+    for e in inventory:
+        sample=e['sample'];total=sum(values[sample] for values in counts.values())
+        status='retained' if total else 'no_demultiplexed_reads' if e['read_pairs_demux']=='0' else 'no_ASVs_retained_check_nfcore_QC'
+        writer.writerow([sample,e['source'],e['pool'],e['read_pairs_demux'],int(sample in original_samples),total,status])
 
 
 count_ids = set(counts)
@@ -1309,7 +1356,7 @@ with open(os.path.join(integrated_dir, 'domain_relative_abundance_per_sample.tsv
     writer.writerow(['Sample'] + all_domains)
     for sample in samples:
         total = sum(domain_per_sample[sample].values())
-        values = [domain_per_sample[sample].get(domain, 0) / total if total else 0
+        values = [domain_per_sample[sample].get(domain, 0) / total if total else ""
                   for domain in all_domains]
         writer.writerow([sample] + values)
 
@@ -1335,8 +1382,9 @@ with open(os.path.join(integrated_dir, 'alpha_diversity_unrarefied.tsv'), 'w', n
             shannon = -sum(p * math.log(p) for p in proportions if p > 0)
             simpson = 1 - sum(p * p for p in proportions)
         else:
-            shannon = 0.0
-            simpson = 0.0
+            observed = ""
+            shannon = ""
+            simpson = ""
         writer.writerow([sample, observed, shannon, simpson, reads])
 
 sample_totals = {sample: sum(counts[asv][sample] for asv in counts) for sample in samples}
@@ -1356,6 +1404,9 @@ with open(os.path.join(integrated_dir, 'rarefaction_expected_ASVs.tsv'), 'w', ne
     for sample in samples:
         total = sample_totals[sample]
         abundances = [counts[asv][sample] for asv in counts if counts[asv][sample] > 0]
+        if total == 0:
+            writer.writerow([sample, 0, ""])
+            continue
         for depth in sorted(set([0, total] + [d for d in depths if d <= total])):
             if depth == 0 or total == 0:
                 expected = 0.0
@@ -1376,6 +1427,31 @@ with open(os.path.join(integrated_dir, 'rarefaction_expected_ASVs.tsv'), 'w', ne
                     expected += 1.0 - p_zero
             writer.writerow([sample, depth, expected])
 
+from pathlib import Path
+import shutil
+status_path=Path(integrated_dir)/'sample_processing_status.tsv'
+with status_path.open() as h:
+    status_reader=csv.DictReader(h,delimiter='\t')
+    status_fields=status_reader.fieldnames
+    excluded=[row for row in status_reader if row['status']!='retained']
+with (Path(integrated_dir)/'excluded_samples.tsv').open('w',newline='') as h:
+    writer=csv.DictWriter(h,fieldnames=status_fields,delimiter='\t')
+    writer.writeheader();writer.writerows(excluded)
+qc_dir=Path(integrated_dir)/'nfcore_QC_reports';qc_dir.mkdir(exist_ok=True)
+silva_root=Path(silva_table).parent.parent
+catalog=[]
+for source in sorted(silva_root.rglob('*')):
+    if not source.is_file() or source.suffix.lower() not in ('.tsv','.csv','.txt'):continue
+    lower=source.name.lower()
+    if any(token in lower for token in ('read_count','readcount','filter_stats','filtering_stats','cutadapt_summary')):
+        relative=source.relative_to(silva_root)
+        target=qc_dir/relative;target.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copyfile(source,target)
+        catalog.append([str(relative),str(source),str(target)])
+with (Path(integrated_dir)/'nfcore_QC_report_index.tsv').open('w',newline='') as h:
+    writer=csv.writer(h,delimiter='\t');writer.writerow(['relative_path','original_report','copied_report']);writer.writerows(catalog)
+print('Echantillons sans ASV final :',len(excluded),'; voir excluded_samples.tsv et les rapports nf-core.')
+
 print('Intégration terminée : {} ASV, {} échantillons'.format(len(counts), len(samples)))
 PY_INTEGRATE
 }
@@ -1388,12 +1464,13 @@ date\t$(date '+%F %T')
 project_root\t${PROJECT_ROOT}
 jedi_dir\t${JEDI_DIR}
 raw_dir\t${RAW_DIR}
-transects_dir\t${TRANSECTS_DIR}
-mega_inventory\t${MEGA_INVENTORY}
-demux_summary\t${DEMUX_DIR}/demultiplex_summary.json
+mega_demux_tsv\t${MEGA_DEMUX_TSV}
+input_signature\t${SIGNATURE_FILE}
+ignore_failed_filtering\ttrue
+ignore_failed_trimming\ttrue
+ignore_empty_input_files\ttrue
+min_read_counts\t1
 keep_mega_controls\t${KEEP_MEGA_CONTROLS}
-demux_max_offset\t${DEMUX_MAX_OFFSET}
-demux_primer_errors\t${DEMUX_PRIMER_ERRORS}
 profile\t${PROFILE}
 nfcore_version\t${NFCORE_VERSION}
 forward_primer\t${FORWARD_PRIMER}
@@ -1436,9 +1513,13 @@ validate_final_outputs() {
     "${INTEGRATED_DIR}/alpha_diversity_unrarefied.tsv"
     "${INTEGRATED_DIR}/rarefaction_expected_ASVs.tsv"
     "${RUN_MANIFEST}"
-    "${MEGA_INVENTORY}"
-    "${DEMUX_DIR}/demultiplex_summary.json"
     "${INTEGRATED_DIR}/sample_processing_status.tsv"
+    "${INTEGRATED_DIR}/excluded_samples.tsv"
+    "${DEMUX_DIR}/DEMULTIPLEX_SUCCESS.json"
+    "${MEGA_INVENTORY}"
+    "${SIGNATURE_FILE}"
+    "${SILVA_DIR}/SILVA_SUCCESS.txt"
+    "${PR2_DIR}/PR2_SUCCESS.txt"
   )
 
   local output
@@ -1454,35 +1535,50 @@ validate_final_outputs() {
 }
 
 main() {
+  if [[ "${1:-}" != "" && "${1:-}" != "--check-only" ]]; then
+    die "Usage: bash $0 [--check-only]"
+  fi
+  if [[ "${FORCE_ALL}" != 0 || "${FORCE_SILVA}" != 0 || "${FORCE_PR2}" != 0 || "${FORCE_INTEGRATION}" != 0 ]]; then
+    die "FORCE_* desactive en V8 : choisir un nouveau JEDI_DIR pour changer les parametres."
+  fi
   acquire_lock
+  require_cmd "${PYTHON_BIN}"
+  [[ -d "${RAW_DIR}" ]] || die "Dossier donnees absent : ${RAW_DIR}"
+  local common_sheet="${SAMPLESHEET}" common_debug="${SAMPLESHEET_DEBUG}"
+  SAMPLESHEET="${INPUT_DIR}/samplesheet_old.tsv"
+  SAMPLESHEET_DEBUG="${INPUT_DIR}/samplesheet_old_debug.tsv"
+  build_samplesheet
+  SAMPLESHEET="${common_sheet}"
+  SAMPLESHEET_DEBUG="${common_debug}"
+  write_helpers
+  preflight_inputs
+  if [[ "${1:-}" == "--check-only" ]]; then
+    log "Preflight termine. Aucun FASTQ demultiplexe, aucun Nextflow lance."
+    return 0
+  fi
+  rm -f "${SUCCESS_FLAG}" "${FAIL_FLAG}"
+  cp "${SELF_PATH}" "${INPUT_DIR}/pipeline_source_v8.sh"
   setup_environment
   activate_nextflow_java
   check_prerequisites
+  demultiplex_mega
+  combine_samplesheets
+  if [[ ! -s "${INPUT_DIR}/FASTQ_GZIP_SUCCESS.txt" ]]; then
+    check_fastq_integrity
+    printf 'SUCCESS\n' > "${INPUT_DIR}/FASTQ_GZIP_SUCCESS.txt"
+  fi
   write_nextflow_config
   preload_problematic_container
-  demultiplex_mega
-  build_samplesheet
-  append_mega_samples
-  check_fastq_integrity
-
-  log "Pipeline ${SCRIPT_VERSION}"
-  log "Racine ${JEDI_DIR}"
-  log "nf-core/ampliseq ${NFCORE_VERSION}"
-  log "Profil ${PROFILE}"
-  log "Classifieurs ${SILVA_REF} et ${PR2_REF_LABEL}"
-  log "Amorces ${FORWARD_PRIMER} ${REVERSE_PRIMER}"
-
+  log "Pipeline ${SCRIPT_VERSION} ; resultats ${JEDI_DIR}"
+  log "Qualite conservee : trunclenf=${TRUNC_LEN_F}, trunclenr=${TRUNC_LEN_R}, max_ee=${MAX_EE}"
+  log "Les echantillons sans reads apres filtrage seront exclus du calcul et traces dans le bilan."
   run_silva_pipeline
   classify_pr2_from_silva_asvs
   integrate_outputs
   write_manifest
   validate_final_outputs
-
-  log "Pipeline JEDI terminé avec succès"
-  log "ASV SILVA : ${SILVA_ASV_FASTA}"
-  log "Taxonomie SILVA : ${SILVA_TAXONOMY}"
-  log "Taxonomie PR2 : ${PR2_TAXONOMY_TSV}"
-  log "Table intégrée : ${INTEGRATED_DIR}/ASV_table_JEDI_with_taxonomy.tsv"
+  log "Pipeline termine avec succes : ${INTEGRATED_DIR}"
+  log "IMPORTANT : consulter sample_processing_status.tsv avant toute analyse statistique."
 }
 
 main "$@"
